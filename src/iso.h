@@ -1,12 +1,16 @@
 #ifndef __ISO_H__
 #define __ISO_H__
 
-#include <leveldb/c.h>
+#include "entry.pb.h"
+#include <leveldb/db.h>
+#include <memory>
 
-typedef struct iso {
-  leveldb_t *store;
-} iso_t;
+class ISO {
+public:
+  void WriteEntry(const Entry &entry);
 
-void start_http(const char *addr);
+private:
+  std::unique_ptr<leveldb::DB> store_;
+};
 
 #endif
