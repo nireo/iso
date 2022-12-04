@@ -5,9 +5,8 @@
 
 typedef struct iso {
   leveldb_t *store;
-
 } iso_t;
 
-iso_t *new_iso(void);
+void start_http(const char *addr);
 
 #endif

@@ -1,23 +1,32 @@
 #include "iso.h"
+#include "mongoose.h"
 
 #include <leveldb/c.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-iso_t *new_iso(void) {
-  iso_t *v = malloc(sizeof(iso_t));
+// global variable to make the code a lot simpler
+static iso_t *fs;
 
-  char *err = NULL;
-  v->store = leveldb_open(leveldb_options_create(), "iso.db", &err);
+void init_iso(void) {}
 
-  if (err != NULL) {
-    fprintf(stderr, "failed opening database\n");
-    return NULL;
+static void handler(struct mg_connection *c, int ev, void *ev_data,
+                    void *fn_data) {
+  if (ev == MG_EV_HTTP_MSG) {
+    mg_http_reply(c, 200, "Content-Type: text/plain\r\n", "Hello, %s\n",
+                  "world");
   }
-  leveldb_free(err);
-  err = NULL;
+}
 
-  return v;
+void start_http(const char *addr) {
+  struct mg_mgr mgr;
+  mg_mgr_init(&mgr);
+  mg_http_listen(&mgr, addr, handler, &mgr);
+  for (;;) {
+    mg_mgr_poll(&mgr, 1000);
+  }
+
+  mg_mgr_free(&mgr);
 }
 
 void free_iso(iso_t *iso) {
