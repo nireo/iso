@@ -5,6 +5,7 @@
 
 typedef struct iso {
   leveldb_t *store;
+
 } iso_t;
 
 iso_t *new_iso(void);
