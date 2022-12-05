@@ -1,8 +1,10 @@
 #include "iso.h"
+#include "base64.h"
 #include "entry.pb-c.h"
 #include "mongoose.h"
 
 #include <leveldb/c.h>
+#include <openssl/md5.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +17,21 @@
 static iso_t *fs;
 
 void init_iso(void) {}
+
+static char *_key_to_volume(const char *key) {
+  unsigned char md5_sum[MD5_DIGEST_LENGTH];
+  MD5(key, strlen(key), md5_sum);
+
+  size_t base64_size;
+  unsigned char *encoded = base64_encode(key, strlen(key), &base64_size);
+
+  size_t nbytes =
+      snprintf(NULL, 0, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded) + 1;
+  char *path = malloc(nbytes * sizeof(char));
+  snprintf(path, nbytes, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded);
+
+  return path;
+}
 
 static Entry *_get_entry(const char *key) {
   size_t read_len = 0;
@@ -31,6 +48,7 @@ static Entry *_get_entry(const char *key) {
     leveldb_free(err);
     return NULL;
   }
+
   Entry *entry = entry__unpack(NULL, read_len, (uint8_t *)read);
   if (entry == NULL) {
     leveldb_free(read);
@@ -57,6 +75,12 @@ static void _write_to_store(const char *key, const Entry *entry) {
     leveldb_free(err);
   }
   free(data);
+}
+
+static char *_pick_volume(iso_t *iso, const char *key) {
+  char *best_volume = NULL;
+
+  return best_volume;
 }
 
 static void handler(struct mg_connection *c, int ev, void *ev_data,

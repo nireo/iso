@@ -1,5 +1,7 @@
+#include "base64.h"
 #include "iso.h"
 #include <assert.h>
+#include <openssl/md5.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,7 +56,7 @@ int main(int argc, char **argv) {
     } else if (strncmp(argv[i], "-s", 2)) {
       server_list = strsplit(argv[i++], ',');
     } else if (strncmp(argv[i], "-i", 2)) {
-      db_index = argv[i++];
+      db_index = strdup(argv[i++]);
     }
   }
 
@@ -67,5 +69,6 @@ int main(int argc, char **argv) {
   snprintf(host, nbytes, "https://localhost:%d", port);
 
   start_http(host);
+  free(db_index);
   free(host);
 }
