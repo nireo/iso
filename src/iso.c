@@ -77,10 +77,51 @@ static void _write_to_store(const char *key, const Entry *entry) {
   free(data);
 }
 
-static char *_pick_volume(iso_t *iso, const char *key) {
-  char *best_volume = NULL;
+static void _set_entry(const char *key, const char *volume) {
+  char *err = NULL;
 
-  return best_volume;
+  leveldb_put(fs->store, leveldb_writeoptions_create(), key, strlen(key),
+              volume, strlen(volume), &err);
+  if (err != NULL) {
+    fprintf(stderr, "failed writing entry into database %s\n", err);
+    leveldb_free(err);
+  }
+}
+
+static char *_get_entry_(const char *key) {
+  char *err = NULL;
+  if (err != NULL) {
+    fprintf(stderr, "error getting entry from database %s\n", err);
+    leveldb_free(err);
+  }
+
+  size_t read_len = 0;
+  char *read = leveldb_get(fs->store, leveldb_readoptions_create(), key,
+                           strlen(key), &read_len, &err);
+
+  return read;
+}
+
+static char *_pick_volume(const char *key) {
+  int best_volume = 0; // store index to avoid constantly copying volume name.
+  unsigned char best_score[MD5_DIGEST_LENGTH];
+  int first = 1;
+
+  for (int i = 0; i < fs->volume_count; ++i) {
+    unsigned char curr_score[MD5_DIGEST_LENGTH];
+    MD5_CTX ctx;
+    MD5_INIT(&ctx);
+    MD5_Update(&ctx, fs->volumes[i], strlen(fs->volumes[i]));
+    MD5_Final(curr_score, &ctx);
+
+    if (first == 1) {
+      first = 0;
+      memcpy(best_score, curr_score, MD5_DIGEST_LENGTH);
+      best_volume = i;
+    }
+  }
+
+  return strdup(fs->volumes[best_volume]);
 }
 
 static void handler(struct mg_connection *c, int ev, void *ev_data,
