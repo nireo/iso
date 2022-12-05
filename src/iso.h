@@ -5,6 +5,7 @@
 
 typedef struct iso {
   leveldb_t *store;
+  char **volumes;
 } iso_t;
 
 void start_http(const char *addr);

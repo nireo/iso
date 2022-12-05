@@ -55,8 +55,8 @@ static void _write_to_store(const char *key, const Entry *entry) {
   if (err != NULL) {
     fprintf(stderr, "failed writing entry into database %s\n", err);
     leveldb_free(err);
-    return;
   }
+  free(data);
 }
 
 static void handler(struct mg_connection *c, int ev, void *ev_data,
@@ -70,12 +70,15 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
       return;
     }
 
-    strncpy(key, http_msg->uri.ptr, http_msg->uri.len);
+    // uri.ptr + 1 to skip the '/'
+    strncpy(key, http_msg->uri.ptr + 1, http_msg->uri.len - 1);
     if (strncmp(http_msg->method.ptr, "PUT", (int)http_msg->method.len) == 0) {
-      // handle creation of entry into the database.
+      return;
     }
 
     if (strncmp(http_msg->method.ptr, "GET", (int)http_msg->method.len) == 0) {
+      printf("this is a get request and the key is %s", key);
+      return;
     }
 
     mg_http_reply(c, 405, "", "method not allowed... only: PUT/GET");
