@@ -64,6 +64,7 @@ static char *_key_to_path(const char *key) {
   char *path = malloc(nbytes * sizeof(char));
   snprintf(path, nbytes, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded);
   path[nbytes] = '\0';
+  free(encoded);
 
   return path;
 }
@@ -236,6 +237,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       volume_url[nbytes] = '\0';
 
       printf("volume address: %s\n", volume_url);
+      printf("data: %s\n", put_data);
 
       // struct mg_mgr mgr;
       // bool done = false;
