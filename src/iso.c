@@ -16,7 +16,10 @@
 
 // global variable to make the code a lot simpler
 static iso_t *fs;
-static int s_signo = 0;
+
+// Handle interrupts, like Ctrl-C
+static int s_signo;
+static void signal_handler(int signo) { s_signo = signo; }
 
 // variable used to send data to volume servers.
 // mongoose needs to use a separate handler for sending
@@ -24,11 +27,6 @@ static int s_signo = 0;
 static uint64_t timeout_ms = 10000;
 static char *put_data = NULL;
 static char *volume_url = NULL;
-
-static void signal_handler(int signo) {
-  printf("stopping...\n");
-  s_signo = signo;
-}
 
 void init_iso(char **volumes, size_t volume_count, char *index_path) {
   fs = malloc(sizeof(iso_t));
@@ -212,8 +210,6 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
 
     strncpy(&key[0], http_msg->uri.ptr + 1, http_msg->uri.len);
     key[http_msg->uri.len] = '\0';
-    printf("%s\n", key);
-
     int keylen = strlen(key);
 
     if (strncmp(http_msg->method.ptr, "PUT", 3) == 0) {
@@ -225,9 +221,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
 
       // TODO: check if key already exists
       char *path = _key_to_path(key, keylen);
-      printf("path: %s\n", path);
       char *volume = _pick_volume(key, keylen);
-      printf("picked volume: %s\n", volume);
 
       // copy request data.
       put_data = malloc(http_msg->body.len + 1);
@@ -239,9 +233,9 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       snprintf(volume_url, nbytes, "%s%s", volume, path);
       volume_url[nbytes] = '\0';
 
-      printf("volume address: %s\n", volume_url);
-      printf("data: %s\n", put_data);
-
+      // store the address instead of the just the volume name
+      // so we don't have to recalculate the address every time.
+      _set_entry(key, volume_url);
       // struct mg_mgr mgr;
       // bool done = false;
       // mg_mgr_init(&mgr);
@@ -264,22 +258,18 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
     if (strncmp(http_msg->method.ptr, "GET", 3) == 0) {
       char *volume = _get_entry_(key);
       if (volume == NULL) {
-        mg_http_reply(c, 404, "", "entry with key not found.\n");
+        mg_http_reply(c, 404, "", "key not found.\n");
         return;
       }
 
-      char *path = _key_to_path(key, keylen);
-
-      size_t nbytes =
-          snprintf(NULL, 0, "Location: %s/%s\r\n", volume, path) + 1;
-      char *header = malloc(nbytes * sizeof(char));
-      snprintf(header, nbytes, "Location: %s/%s\r\n", volume, path);
-      header[nbytes] = '\0';
-
-      free(path);
+      mg_printf(c,
+                "HTTP/1.1 302 Found\r\n"
+                "Location: %s\r\n"
+                "Content-Length: 0\r\n"
+                "\r\n",
+                volume);
+      MG_INFO(("volume is now freed"));
       free(volume);
-      mg_http_reply(c, 302, header, "");
-      free(header);
       return;
     }
 
@@ -292,11 +282,13 @@ void start_http(const char *addr) {
   // handle signals properly.
   // signal(SIGINT, signal_handler);
   // signal(SIGTERM, signal_handler);
+  signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
 
   struct mg_mgr mgr;
   mg_mgr_init(&mgr);
   mg_http_listen(&mgr, addr, http_handler, &mgr);
-  for (;;) {
+  while (s_signo == 0) {
     mg_mgr_poll(&mgr, 1000);
   }
 
