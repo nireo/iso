@@ -5,6 +5,7 @@
 
 #include <leveldb/c.h>
 #include <openssl/md5.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,9 @@
 
 // global variable to make the code a lot simpler
 static iso_t *fs;
+static s_signo;
+
+static void signal_handler(int signo) { s_signo = signo; }
 
 void init_iso(char **volumes, size_t volume_count, char *index_path) {
   fs = malloc(sizeof(iso_t));
@@ -155,14 +159,18 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
       return;
     }
 
-    // uri.ptr + 1 to skip the '/'
-    strncpy(key, http_msg->uri.ptr + 1, http_msg->uri.len - 1);
+    strncpy(&key[0], http_msg->uri.ptr + 1, http_msg->uri.len);
+    key[http_msg->uri.len] = '\0';
+    printf("%s\n", key);
+
     if (strncmp(http_msg->method.ptr, "PUT", 3) == 0) {
+      mg_http_reply(c, 201, "", "key was created.\n");
       return;
     }
 
     if (strncmp(http_msg->method.ptr, "GET", 3) == 0) {
       printf("this is a get request and the key is %s", key);
+      mg_http_reply(c, 200, "", "GET request received\n");
       return;
     }
 
@@ -172,10 +180,13 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
 }
 
 void start_http(const char *addr) {
+  signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
+
   struct mg_mgr mgr;
   mg_mgr_init(&mgr);
   mg_http_listen(&mgr, addr, handler, &mgr);
-  for (;;) {
+  while (s_signo == 0) {
     mg_mgr_poll(&mgr, 1000);
   }
 
