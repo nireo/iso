@@ -16,9 +16,12 @@
 
 // global variable to make the code a lot simpler
 static iso_t *fs;
-static s_signo;
+static int s_signo;
 
-static void signal_handler(int signo) { s_signo = signo; }
+static void signal_handler(int signo) {
+  printf("stopping\n");
+  s_signo = signo;
+}
 
 void init_iso(char **volumes, size_t volume_count, char *index_path) {
   fs = malloc(sizeof(iso_t));
@@ -112,14 +115,15 @@ static void _set_entry(const char *key, const char *volume) {
 
 static char *_get_entry_(const char *key) {
   char *err = NULL;
-  if (err != NULL) {
-    fprintf(stderr, "error getting entry from database %s\n", err);
-    leveldb_free(err);
-  }
-
   size_t read_len = 0;
   char *read = leveldb_get(fs->store, leveldb_readoptions_create(), key,
                            strlen(key), &read_len, &err);
+
+  if (err != NULL) {
+    fprintf(stderr, "error getting entry from database %s\n", err);
+    leveldb_free(err);
+    return NULL;
+  }
 
   return read;
 }
@@ -169,8 +173,23 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
     }
 
     if (strncmp(http_msg->method.ptr, "GET", 3) == 0) {
-      printf("this is a get request and the key is %s", key);
-      mg_http_reply(c, 200, "", "GET request received\n");
+      char *volume = _get_entry_(key);
+      if (volume == NULL) {
+        mg_http_reply(c, 404, "", "entry with key not found.\n");
+        return;
+      }
+
+      char *path = _key_to_volume(key);
+
+      size_t nbytes =
+          snprintf(NULL, 0, "Location: %s/%s\r\n", volume, path) + 1;
+      char *header = malloc(nbytes * sizeof(char));
+      snprintf(header, nbytes, "Location: %s/%s\r\n", volume, path);
+
+      free(path);
+      free(volume);
+      mg_http_reply(c, 302, header, "");
+      free(header);
       return;
     }
 
@@ -180,6 +199,7 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
 }
 
 void start_http(const char *addr) {
+  // handle signals properly.
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
 
@@ -190,6 +210,7 @@ void start_http(const char *addr) {
     mg_mgr_poll(&mgr, 1000);
   }
 
+  printf("service has gracefully stopped.\n");
   mg_mgr_free(&mgr);
 }
 
