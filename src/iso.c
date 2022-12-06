@@ -16,10 +16,17 @@
 
 // global variable to make the code a lot simpler
 static iso_t *fs;
-static int s_signo;
+static int s_signo = 0;
+
+// variable used to send data to volume servers.
+// mongoose needs to use a separate handler for sending
+// requests.
+static uint64_t timeout_ms = 10000;
+static char *put_data = NULL;
+static char *volume_url = NULL;
 
 static void signal_handler(int signo) {
-  printf("stopping\n");
+  printf("stopping...\n");
   s_signo = signo;
 }
 
@@ -42,7 +49,7 @@ void init_iso(char **volumes, size_t volume_count, char *index_path) {
   fs->index_path = index_path;
 }
 
-static char *_key_to_volume(const char *key) {
+static char *_key_to_path(const char *key) {
   unsigned char md5_sum[MD5_DIGEST_LENGTH];
   MD5(key, strlen(key), md5_sum);
 
@@ -152,8 +159,42 @@ static char *_pick_volume(const char *key) {
   return strdup(fs->volumes[best_volume]);
 }
 
-static void handler(struct mg_connection *c, int ev, void *ev_data,
-                    void *fn_data) {
+static void data_sender(struct mg_connection *c, int ev, void *ev_data,
+                        void *fn_data) {
+  if (ev == MG_EV_OPEN) {
+    *(uint64_t *)c->label = mg_millis() + timeout_ms;
+  } else if (ev == MG_EV_POLL) {
+    if (mg_millis() > *(uint64_t *)c->label &&
+        (c->is_connecting || c->is_resolving)) {
+      mg_error(c, "Connect timeout");
+    }
+  } else if (ev == MG_EV_CONNECT) {
+    struct mg_str host = mg_url_host(volume_url);
+    int content_length = put_data ? strlen(put_data) : 0;
+    mg_printf(c,
+              "%s %s HTTP/1.0\r\n"
+              "Host: %.*s\r\n"
+              "Content-Type: octet-stream\r\n"
+              "Content-Length: %d\r\n"
+              "\r\n",
+              put_data ? "PUT" : "GET", mg_url_uri(volume_url), (int)host.len,
+              host.ptr, content_length);
+    mg_send(c, put_data, content_length);
+  } else if (ev == MG_EV_HTTP_MSG) {
+    // print response
+    struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+    printf("%.*s", (int)hm->message.len, hm->message.ptr);
+    // close connection and event loop.
+    c->is_closing = 1;
+    *(bool *)fn_data = true;
+  } else if (ev == MG_EV_ERROR) {
+    // tell event loop to stop
+    *(bool *)fn_data = true;
+  }
+}
+
+static void http_handler(struct mg_connection *c, int ev, void *ev_data,
+                         void *fn_data) {
   if (ev == MG_EV_HTTP_MSG) {
     struct mg_http_message *http_msg = ev_data;
 
@@ -168,6 +209,40 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
     printf("%s\n", key);
 
     if (strncmp(http_msg->method.ptr, "PUT", 3) == 0) {
+      // ignore empty request bodies
+      if (http_msg->body.len == 0) {
+        mg_http_reply(c, 411, "", "request body empty.\n");
+        return;
+      }
+
+      // TODO: check if key already exists
+      char *path = _key_to_path(key);
+      char *volume = _pick_volume(key);
+
+      // copy request data.
+      put_data = malloc(http_msg->body.len + 1);
+      strncpy(put_data, http_msg->body.ptr, http_msg->body.len);
+      put_data[http_msg->body.len] = '\0';
+
+      size_t nbytes = snprintf(NULL, 0, "%s/%s/%s", volume, path, key) + 1;
+      volume_url = malloc(nbytes * sizeof(char));
+      snprintf(volume_url, nbytes, "%s/%s/%s", volume, path, key);
+
+      struct mg_mgr mgr;
+      bool done = false;
+      mg_mgr_init(&mgr);
+      mg_http_connect(&mgr, volume_url, data_sender, &done);
+      while (!done)
+        mg_mgr_poll(&mgr, 100);
+
+      mg_mgr_free(&mgr);
+      free(path);
+      free(volume);
+      free(volume_url);
+      free(put_data);
+      volume_url = NULL;
+      put_data = NULL;
+
       mg_http_reply(c, 201, "", "key was created.\n");
       return;
     }
@@ -179,7 +254,7 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
         return;
       }
 
-      char *path = _key_to_volume(key);
+      char *path = _key_to_path(key);
 
       size_t nbytes =
           snprintf(NULL, 0, "Location: %s/%s\r\n", volume, path) + 1;
@@ -205,7 +280,7 @@ void start_http(const char *addr) {
 
   struct mg_mgr mgr;
   mg_mgr_init(&mgr);
-  mg_http_listen(&mgr, addr, handler, &mgr);
+  mg_http_listen(&mgr, addr, http_handler, &mgr);
   while (s_signo == 0) {
     mg_mgr_poll(&mgr, 1000);
   }
