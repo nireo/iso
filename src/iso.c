@@ -38,7 +38,10 @@ void init_iso(char **volumes, size_t volume_count, char *index_path) {
   }
 
   char *err = NULL;
-  fs->store = leveldb_open(leveldb_options_create(), index_path, &err);
+  leveldb_options_t *opts = leveldb_options_create();
+  leveldb_options_set_create_if_missing(opts, 1);
+
+  fs->store = leveldb_open(opts, index_path, &err);
   if (err != NULL) {
     fprintf(stderr, "could not open index file: %s\n", err);
     exit(1);
@@ -60,6 +63,7 @@ static char *_key_to_path(const char *key) {
       snprintf(NULL, 0, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded) + 1;
   char *path = malloc(nbytes * sizeof(char));
   snprintf(path, nbytes, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded);
+  path[nbytes] = '\0';
 
   return path;
 }
@@ -144,7 +148,7 @@ static char *_pick_volume(const char *key) {
   for (int i = 0; i < fs->volume_count; ++i) {
     unsigned char curr_score[MD5_DIGEST_LENGTH];
     MD5_CTX ctx;
-    MD5_INIT(&ctx);
+    MD5_Init(&ctx);
     MD5_Update(&ctx, fs->volumes[i], strlen(fs->volumes[i]));
     MD5_Final(curr_score, &ctx);
 
@@ -217,25 +221,30 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
 
       // TODO: check if key already exists
       char *path = _key_to_path(key);
+      printf("path: %s\n", path);
       char *volume = _pick_volume(key);
+      printf("picked volume: %s\n", volume);
 
       // copy request data.
       put_data = malloc(http_msg->body.len + 1);
       strncpy(put_data, http_msg->body.ptr, http_msg->body.len);
       put_data[http_msg->body.len] = '\0';
 
-      size_t nbytes = snprintf(NULL, 0, "%s/%s/%s", volume, path, key) + 1;
+      size_t nbytes = snprintf(NULL, 0, "%s%s", volume, path) + 1;
       volume_url = malloc(nbytes * sizeof(char));
-      snprintf(volume_url, nbytes, "%s/%s/%s", volume, path, key);
+      snprintf(volume_url, nbytes, "%s%s", volume, path);
+      volume_url[nbytes] = '\0';
 
-      struct mg_mgr mgr;
-      bool done = false;
-      mg_mgr_init(&mgr);
-      mg_http_connect(&mgr, volume_url, data_sender, &done);
-      while (!done)
-        mg_mgr_poll(&mgr, 100);
+      printf("volume address: %s\n", volume_url);
 
-      mg_mgr_free(&mgr);
+      // struct mg_mgr mgr;
+      // bool done = false;
+      // mg_mgr_init(&mgr);
+      // mg_http_connect(&mgr, volume_url, data_sender, &done);
+      // while (!done)
+      //   mg_mgr_poll(&mgr, 100);
+      //
+      // mg_mgr_free(&mgr);
       free(path);
       free(volume);
       free(volume_url);
@@ -260,6 +269,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
           snprintf(NULL, 0, "Location: %s/%s\r\n", volume, path) + 1;
       char *header = malloc(nbytes * sizeof(char));
       snprintf(header, nbytes, "Location: %s/%s\r\n", volume, path);
+      header[nbytes] = '\0';
 
       free(path);
       free(volume);
@@ -275,8 +285,8 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
 
 void start_http(const char *addr) {
   // handle signals properly.
-  signal(SIGINT, signal_handler);
-  signal(SIGTERM, signal_handler);
+  // signal(SIGINT, signal_handler);
+  // signal(SIGTERM, signal_handler);
 
   struct mg_mgr mgr;
   mg_mgr_init(&mgr);
@@ -289,7 +299,7 @@ void start_http(const char *addr) {
   mg_mgr_free(&mgr);
 }
 
-void free_iso() {
+void close_iso() {
   for (size_t i = 0; i < fs->volume_count; ++i) {
     free(fs->volumes[i]);
   }

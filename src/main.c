@@ -67,8 +67,12 @@ int main(int argc, char **argv) {
   size_t nbytes = snprintf(NULL, 0, "https://localhost:%d", port) + 1;
   char *host = malloc(nbytes * sizeof(char));
   snprintf(host, nbytes, "https://localhost:%d", port);
+  host[nbytes] = '\0';
+
+  init_iso(server_list, 1, db_index);
 
   start_http(host);
+  close_iso();
   free(db_index);
   free(host);
 }
