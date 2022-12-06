@@ -52,23 +52,6 @@ void init_iso(char **volumes, size_t volume_count, char *index_path) {
   fs->index_path = index_path;
 }
 
-static char *_key_to_path(const char *key) {
-  unsigned char md5_sum[MD5_DIGEST_LENGTH];
-  MD5(key, strlen(key), md5_sum);
-
-  size_t base64_size;
-  unsigned char *encoded = base64_encode(key, strlen(key), &base64_size);
-
-  size_t nbytes =
-      snprintf(NULL, 0, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded) + 1;
-  char *path = malloc(nbytes * sizeof(char));
-  snprintf(path, nbytes, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded);
-  path[nbytes] = '\0';
-  free(encoded);
-
-  return path;
-}
-
 static Entry *_get_entry(const char *key) {
   size_t read_len = 0;
   // handle possible errors
@@ -141,7 +124,7 @@ static char *_get_entry_(const char *key) {
 }
 
 // _pick_volume returns a copy of the best volume for a given key.
-static char *_pick_volume(const char *key) {
+static char *_pick_volume(const char *key, int keylen) {
   int best_volume = 0;
   unsigned char best_score[MD5_DIGEST_LENGTH];
   int first = 1;
@@ -151,6 +134,7 @@ static char *_pick_volume(const char *key) {
     MD5_CTX ctx;
     MD5_Init(&ctx);
     MD5_Update(&ctx, fs->volumes[i], strlen(fs->volumes[i]));
+    MD5_Update(&ctx, key, keylen);
     MD5_Final(curr_score, &ctx);
 
     if (first == 1 ||
@@ -162,6 +146,23 @@ static char *_pick_volume(const char *key) {
   }
 
   return strdup(fs->volumes[best_volume]);
+}
+
+static char *_key_to_path(const char *key, int keylen) {
+  unsigned char md5_sum[MD5_DIGEST_LENGTH];
+  MD5(key, strlen(key), md5_sum);
+
+  size_t base64_size;
+  unsigned char *encoded = base64_encode(key, keylen, &base64_size);
+
+  size_t nbytes =
+      snprintf(NULL, 0, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded) + 1;
+  char *path = malloc(nbytes * sizeof(char));
+  snprintf(path, nbytes, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded);
+  path[nbytes] = '\0';
+  free(encoded);
+
+  return path;
 }
 
 static void data_sender(struct mg_connection *c, int ev, void *ev_data,
@@ -213,6 +214,8 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
     key[http_msg->uri.len] = '\0';
     printf("%s\n", key);
 
+    int keylen = strlen(key);
+
     if (strncmp(http_msg->method.ptr, "PUT", 3) == 0) {
       // ignore empty request bodies
       if (http_msg->body.len == 0) {
@@ -221,9 +224,9 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       }
 
       // TODO: check if key already exists
-      char *path = _key_to_path(key);
+      char *path = _key_to_path(key, keylen);
       printf("path: %s\n", path);
-      char *volume = _pick_volume(key);
+      char *volume = _pick_volume(key, keylen);
       printf("picked volume: %s\n", volume);
 
       // copy request data.
@@ -265,7 +268,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
         return;
       }
 
-      char *path = _key_to_path(key);
+      char *path = _key_to_path(key, keylen);
 
       size_t nbytes =
           snprintf(NULL, 0, "Location: %s/%s\r\n", volume, path) + 1;
@@ -293,7 +296,7 @@ void start_http(const char *addr) {
   struct mg_mgr mgr;
   mg_mgr_init(&mgr);
   mg_http_listen(&mgr, addr, http_handler, &mgr);
-  while (s_signo == 0) {
+  for (;;) {
     mg_mgr_poll(&mgr, 1000);
   }
 

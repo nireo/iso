@@ -7,5 +7,9 @@ iso is a simple filesystem built in C. The code here only manages the files, but
 The manager uses:
 
 - mongoose: for a embeddable web server
-- protobuf: encoding and decoding entries
 - leveldb: keeping track of different entries and their locations
+
+## TODO:
+
+- Stop using OpenSSL functions and custom base64 implementation when mongoose has its own functions for both things.
+- Replication to multiple volumes, currently file is written to a "randomly" chosen volume.

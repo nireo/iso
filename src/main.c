@@ -44,10 +44,22 @@ static char **strsplit(char *input, const char delim) {
   return res;
 }
 
+static void usage(const char *name) {
+  fprintf(stderr,
+          "%s usage: -p <port> -s <servers separated with commas> -i "
+          "<path to database file>\n",
+          name);
+  exit(1);
+}
+
 int main(int argc, char **argv) {
   int port;
   char **server_list = NULL;
   char *db_index = NULL;
+
+  if (argc <= 3) {
+    usage(argv[0]);
+  }
 
   // parse command-line arguments.
   for (int i = 1; i < argc; ++i) {
@@ -57,6 +69,8 @@ int main(int argc, char **argv) {
       server_list = strsplit(argv[++i], ',');
     } else if (strncmp(argv[i], "-i", 2) == 0) {
       db_index = strdup(argv[++i]);
+    } else {
+      usage(argv[0]);
     }
   }
 
