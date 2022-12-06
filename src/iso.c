@@ -181,8 +181,8 @@ static void data_sender(struct mg_connection *c, int ev, void *ev_data,
               "Content-Type: octet-stream\r\n"
               "Content-Length: %d\r\n"
               "\r\n",
-              put_data ? "PUT" : "GET", mg_url_uri(volume_url), (int)host.len,
-              host.ptr, content_length);
+              put_data ? "PUT" : "DELETE", mg_url_uri(volume_url),
+              (int)host.len, host.ptr, content_length);
     mg_send(c, put_data, content_length);
   } else if (ev == MG_EV_HTTP_MSG) {
     // print response
@@ -236,14 +236,14 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       // store the address instead of the just the volume name
       // so we don't have to recalculate the address every time.
       _set_entry(key, volume_url);
-      // struct mg_mgr mgr;
-      // bool done = false;
-      // mg_mgr_init(&mgr);
-      // mg_http_connect(&mgr, volume_url, data_sender, &done);
-      // while (!done)
-      //   mg_mgr_poll(&mgr, 100);
-      //
-      // mg_mgr_free(&mgr);
+      struct mg_mgr mgr;
+      bool done = false;
+      mg_mgr_init(&mgr);
+      mg_http_connect(&mgr, volume_url, data_sender, &done);
+      while (!done)
+        mg_mgr_poll(&mgr, 100);
+
+      mg_mgr_free(&mgr);
       free(path);
       free(volume);
       free(volume_url);
@@ -251,7 +251,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       volume_url = NULL;
       put_data = NULL;
 
-      mg_http_reply(c, 201, "", "key was created.\n");
+      mg_http_reply(c, 201, NULL, NULL);
       return;
     }
 
@@ -270,6 +270,28 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
                 volume);
       MG_INFO(("volume is now freed"));
       free(volume);
+      return;
+    }
+
+    if (strncmp(http_msg->method.ptr, "DELETE", 6) == 0) {
+      volume_url = _get_entry_(key);
+      if (volume_url == NULL) {
+        mg_http_reply(c, 404, "", "key not found.\n");
+        return;
+      }
+
+      struct mg_mgr mgr;
+      bool done = false;
+      mg_mgr_init(&mgr);
+      mg_http_connect(&mgr, volume_url, data_sender, &done);
+      while (!done)
+        mg_mgr_poll(&mgr, 100);
+
+      mg_mgr_free(&mgr);
+      free(volume_url);
+      volume_url = NULL;
+
+      mg_http_reply(c, 204, NULL, NULL);
       return;
     }
 
