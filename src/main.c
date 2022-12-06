@@ -51,19 +51,19 @@ int main(int argc, char **argv) {
 
   // parse command-line arguments.
   for (int i = 1; i < argc; ++i) {
-    if (strncmp(argv[i], "-p", 2)) {
-      port = atoi(argv[i++]);
-    } else if (strncmp(argv[i], "-s", 2)) {
-      server_list = strsplit(argv[i++], ',');
-    } else if (strncmp(argv[i], "-i", 2)) {
-      db_index = strdup(argv[i++]);
+    if (strncmp(argv[i], "-p", 2) == 0) {
+      port = atoi(argv[++i]);
+    } else if (strncmp(argv[i], "-s", 2) == 0) {
+      server_list = strsplit(argv[++i], ',');
+    } else if (strncmp(argv[i], "-i", 2) == 0) {
+      db_index = strdup(argv[++i]);
     }
   }
 
   // TODO: initialize the service with the given parameters
+  printf("starting index server at port: %d\n", port);
 
   // startup the server
-
   size_t nbytes = snprintf(NULL, 0, "https://localhost:%d", port) + 1;
   char *host = malloc(nbytes * sizeof(char));
   snprintf(host, nbytes, "https://localhost:%d", port);

@@ -16,7 +16,24 @@
 // global variable to make the code a lot simpler
 static iso_t *fs;
 
-void init_iso(void) {}
+void init_iso(char **volumes, size_t volume_count, char *index_path) {
+  fs = malloc(sizeof(iso_t));
+  if (fs == NULL) {
+    fprintf(stderr, "not enough memory for iso_t*\n");
+    exit(1);
+  }
+
+  char *err = NULL;
+  fs->store = leveldb_open(leveldb_options_create(), index_path, &err);
+  if (err != NULL) {
+    fprintf(stderr, "could not open index file: %s\n", err);
+    exit(1);
+  }
+
+  fs->volumes = volumes;
+  fs->volume_count = volume_count;
+  fs->index_path = index_path;
+}
 
 static char *_key_to_volume(const char *key) {
   unsigned char md5_sum[MD5_DIGEST_LENGTH];
@@ -77,6 +94,7 @@ static void _write_to_store(const char *key, const Entry *entry) {
   free(data);
 }
 
+// _set_entry writes a given key-volume pair into the leveldb store.
 static void _set_entry(const char *key, const char *volume) {
   char *err = NULL;
 
@@ -102,8 +120,9 @@ static char *_get_entry_(const char *key) {
   return read;
 }
 
+// _pick_volume returns a copy of the best volume for a given key.
 static char *_pick_volume(const char *key) {
-  int best_volume = 0; // store index to avoid constantly copying volume name.
+  int best_volume = 0;
   unsigned char best_score[MD5_DIGEST_LENGTH];
   int first = 1;
 
@@ -114,7 +133,8 @@ static char *_pick_volume(const char *key) {
     MD5_Update(&ctx, fs->volumes[i], strlen(fs->volumes[i]));
     MD5_Final(curr_score, &ctx);
 
-    if (first == 1) {
+    if (first == 1 ||
+        strncmp(&best_score[0], &curr_score[0], MD5_DIGEST_LENGTH) == 1) {
       first = 0;
       memcpy(best_score, curr_score, MD5_DIGEST_LENGTH);
       best_volume = i;
@@ -137,11 +157,11 @@ static void handler(struct mg_connection *c, int ev, void *ev_data,
 
     // uri.ptr + 1 to skip the '/'
     strncpy(key, http_msg->uri.ptr + 1, http_msg->uri.len - 1);
-    if (strncmp(http_msg->method.ptr, "PUT", (int)http_msg->method.len) == 0) {
+    if (strncmp(http_msg->method.ptr, "PUT", 3) == 0) {
       return;
     }
 
-    if (strncmp(http_msg->method.ptr, "GET", (int)http_msg->method.len) == 0) {
+    if (strncmp(http_msg->method.ptr, "GET", 3) == 0) {
       printf("this is a get request and the key is %s", key);
       return;
     }
@@ -162,7 +182,12 @@ void start_http(const char *addr) {
   mg_mgr_free(&mgr);
 }
 
-void free_iso(iso_t *iso) {
-  leveldb_close(iso->store);
-  free(iso);
+void free_iso() {
+  for (size_t i = 0; i < fs->volume_count; ++i) {
+    free(fs->volumes[i]);
+  }
+
+  leveldb_close(fs->store);
+  free(fs->index_path);
+  free(fs);
 }
