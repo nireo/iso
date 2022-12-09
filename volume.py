@@ -69,10 +69,12 @@ if __name__ == "__main__":
         os.makedirs(args.path)
 
     conf = nginx_volume_server_conf(args.port, args.path)
-    conf_path = nginx_temporary_config_file(conf)
-    run_cmd = ["nginx", "-c", conf_path, "-p", args.path]
+    print(conf)
+    # conf_path = nginx_temporary_config_file(conf)
+    # run_cmd = ["nginx", "-c", conf_path, "-p", args.path]
 
     try:
-        subprocess.run(run_cmd)
+        # subprocess.run(run_cmd)
+        print("hello")
     except KeyboardInterrupt:
         pass

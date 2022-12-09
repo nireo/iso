@@ -8,6 +8,9 @@ typedef struct iso {
   char **volumes;
   size_t volume_count;
   char *index_path;
+
+  leveldb_writeoptions_t *wopts;
+  leveldb_readoptions_t *ropts;
 } iso_t;
 
 void start_http(const char *addr);

@@ -53,7 +53,7 @@ static void usage(const char *name) {
 }
 
 int main(int argc, char **argv) {
-  int port;
+  int port = 8080;
   char **server_list = NULL;
   char *db_index = NULL;
 
@@ -74,9 +74,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  // TODO: initialize the service with the given parameters
   printf("starting index server at port: %d\n", port);
-
   // startup the server
   size_t nbytes = snprintf(NULL, 0, "https://localhost:%d", port) + 1;
   char *host = malloc(nbytes * sizeof(char));
