@@ -301,9 +301,6 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
 }
 
 void start_http(const char *addr) {
-  // handle signals properly.
-  // signal(SIGINT, signal_handler);
-  // signal(SIGTERM, signal_handler);
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
 
