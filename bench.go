@@ -73,28 +73,30 @@ func main() {
 
 	// 16 concurrent processes
 	for i := 0; i < 16; i++ {
+		fmt.Println("hello?")
 		go func() {
 			for {
 				key := <-reqs
 				value := fmt.Sprintf("value-%d", rand.Int())
-				if err := remote_put("http://localhost:3000/"+key, int64(len(value)), strings.NewReader(value)); err != nil {
+				if err := remote_put("http://localhost:8080/"+key, int64(len(value)), strings.NewReader(value)); err != nil {
 					fmt.Println("PUT FAILED", err)
 					resp <- false
 					continue
 				}
 
-				ss, err := remote_get("http://localhost:3000/" + key)
+				ss, err := remote_get("http://localhost:8080/" + key)
 				if err != nil || ss != value {
 					fmt.Println("GET FAILED", err, ss, value)
 					resp <- false
 					continue
 				}
 
-				if err := remote_delete("http://localhost:3000/" + key); err != nil {
+				if err := remote_delete("http://localhost:8080/" + key); err != nil {
 					fmt.Println("DELETE FAILED", err)
 					resp <- false
 					continue
 				}
+				fmt.Println("done")
 				resp <- true
 			}
 		}()

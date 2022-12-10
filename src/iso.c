@@ -169,6 +169,8 @@ static char *_key_to_path(const char *key, size_t keylen) {
   size_t base64_size;
   unsigned char *encoded = base64_encode(key, keylen, &base64_size);
 
+  // 2 byte layers deep, meaning a fanout of 256; optimized for 16M files per
+  // volume server
   size_t nbytes =
       snprintf(NULL, 0, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded) + 1;
   char *path = malloc(nbytes * sizeof(char));
@@ -184,13 +186,18 @@ static void data_sender(struct mg_connection *c, int ev, void *ev_data,
   if (ev == MG_EV_OPEN) {
     *(uint64_t *)c->label = mg_millis() + timeout_ms;
   } else if (ev == MG_EV_POLL) {
+    // check for timeout
     if (mg_millis() > *(uint64_t *)c->label &&
         (c->is_connecting || c->is_resolving)) {
       mg_error(c, "Connect timeout");
     }
   } else if (ev == MG_EV_CONNECT) {
     struct mg_str host = mg_url_host(volume_url);
+
+    // check if there is any content
     size_t content_length = put_data ? strlen(put_data) : 0;
+
+    // form request and send it
     mg_printf(c,
               "%s %s HTTP/1.0\r\n"
               "Host: %.*s\r\n"
@@ -201,9 +208,6 @@ static void data_sender(struct mg_connection *c, int ev, void *ev_data,
               (int)host.len, host.ptr, content_length);
     mg_send(c, put_data, content_length);
   } else if (ev == MG_EV_HTTP_MSG) {
-    // print response
-    struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-    printf("%.*s", (int)hm->message.len, hm->message.ptr);
     // close connection and event loop.
     c->is_closing = 1;
     *(bool *)fn_data = true;
@@ -243,29 +247,22 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       if (exists) {
         free(exists);
         // tell the user that the entry already exists.
-        mg_http_reply(c, 409, NULL, NULL);
+        mg_http_reply(c, 409, "", "key already exists.\n");
         return;
       }
 
       char *path = _key_to_path(key, keylen);
       char *volume = _pick_volume(key, keylen);
 
-      printf("path: %s\n", path);
-      printf("volume: %s\n", volume);
-
       // copy request data.
       put_data = malloc(http_msg->body.len + 1);
       strncpy(put_data, http_msg->body.ptr, http_msg->body.len);
       put_data[http_msg->body.len] = '\0';
 
-      printf("put data: %s\n", put_data);
-
       size_t nbytes = snprintf(NULL, 0, "%s%s", volume, path) + 1;
       volume_url = malloc(nbytes * sizeof(char));
       snprintf(volume_url, nbytes, "%s%s", volume, path);
       volume_url[nbytes] = '\0';
-
-      printf("volume url: %s\n", volume_url);
 
       // store the address instead of the just the volume name
       // so we don't have to recalculate the address every time.
@@ -287,7 +284,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       volume_url = NULL;
       put_data = NULL;
 
-      mg_http_reply(c, 201, NULL, NULL);
+      mg_http_reply(c, 201, "", "");
       return;
     }
 
@@ -319,7 +316,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       // delete the entry from the database
       int status = _delete_entry(key, keylen);
       if (status != 0) {
-        mg_http_reply(c, 500, NULL, NULL);
+        mg_http_reply(c, 500, "", "level_db delete failed");
         return;
       }
 
@@ -338,7 +335,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       volume_url = NULL;
 
       // return successful
-      mg_http_reply(c, 204, NULL, NULL);
+      mg_http_reply(c, 204, "", "");
       return;
     }
 
