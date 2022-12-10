@@ -6,6 +6,8 @@ RUN apt-get -y update && apt-get -y install nginx python3
 
 # Copy the Nginx config
 RUN mkdir -p /iso
+RUN mkdir -p /tmp/volume
+RUN chmod 777 /tmp/volume
 COPY volume.py /iso/volume.py
 
 # Expose the port for access

@@ -250,15 +250,22 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       char *path = _key_to_path(key, keylen);
       char *volume = _pick_volume(key, keylen);
 
+      printf("path: %s\n", path);
+      printf("volume: %s\n", volume);
+
       // copy request data.
       put_data = malloc(http_msg->body.len + 1);
       strncpy(put_data, http_msg->body.ptr, http_msg->body.len);
       put_data[http_msg->body.len] = '\0';
 
+      printf("put data: %s\n", put_data);
+
       size_t nbytes = snprintf(NULL, 0, "%s%s", volume, path) + 1;
       volume_url = malloc(nbytes * sizeof(char));
       snprintf(volume_url, nbytes, "%s%s", volume, path);
       volume_url[nbytes] = '\0';
+
+      printf("volume url: %s\n", volume_url);
 
       // store the address instead of the just the volume name
       // so we don't have to recalculate the address every time.

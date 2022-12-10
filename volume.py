@@ -10,8 +10,8 @@ def nginx_volume_server_conf(path):
     worker_processes auto;
     pcre_jit on;
 
-    pid %s/nginx_volume.pid;
     error_log /dev/stderr;
+    pid %s/nginx_volume.pid;
 
     events {
         multi_accept on;
@@ -20,21 +20,26 @@ def nginx_volume_server_conf(path):
     }
 
     http {
-        access_log off;
-
         sendfile on;
         sendfile_max_chunk 1024k;
 
         tcp_nodelay on;
         tcp_nopush on;
 
+        open_file_cache off;
+        types_hash_max_size 2048;
+
         server_tokens off;
+
         default_type application/octet-stream;
 
+        error_log /dev/stderr error;
+
         server {
-            listen 80 backlog=4096;
+            listen 80 default_server backlog=4096;
             location / {
                 root %s;
+                disable_symlinks off;
 
                 client_body_temp_path %s/body_temp;
                 client_max_body_size 0;
