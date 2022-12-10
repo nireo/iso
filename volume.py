@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 
 
-def nginx_volume_server_conf(port, path):
+def nginx_volume_server_conf(path):
     nginx_conf = """
     daemon off;
     worker_processes auto;
@@ -32,7 +32,7 @@ def nginx_volume_server_conf(port, path):
         default_type application/octet-stream;
 
         server {
-            listen %d backlog=4096;
+            listen 80 backlog=4096;
             location / {
                 root %s;
 
@@ -49,7 +49,7 @@ def nginx_volume_server_conf(port, path):
         }
     }
     """
-    return nginx_conf % (path, port, path, path)
+    return nginx_conf % (path, path, path)
 
 
 def nginx_temporary_config_file(conf):
@@ -68,13 +68,11 @@ if __name__ == "__main__":
     if not os.path.exists(args.path):
         os.makedirs(args.path)
 
-    conf = nginx_volume_server_conf(args.port, args.path)
-    print(conf)
-    # conf_path = nginx_temporary_config_file(conf)
-    # run_cmd = ["nginx", "-c", conf_path, "-p", args.path]
+    conf = nginx_volume_server_conf(args.path)
+    conf_path = nginx_temporary_config_file(conf)
+    run_cmd = ["nginx", "-c", conf_path, "-p", args.path]
 
     try:
-        # subprocess.run(run_cmd)
-        print("hello")
+        subprocess.run(run_cmd)
     except KeyboardInterrupt:
         pass

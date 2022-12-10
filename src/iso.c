@@ -239,7 +239,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data,
       }
 
       // check if the entry already exists in the database.
-      char *exists = _get_entry_(key);
+      char *exists = _get_entry_(key, keylen);
       if (exists) {
         free(exists);
         // tell the user that the entry already exists.

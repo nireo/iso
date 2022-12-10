@@ -2,13 +2,14 @@
 FROM ubuntu
 
 # Install Nginx
-RUN apt-get -y update && apt-get -y install nginx
+RUN apt-get -y update && apt-get -y install nginx python3
 
 # Copy the Nginx config
-COPY testconf /etc/nginx/sites-available/default
+RUN mkdir -p /iso
+COPY volume.py /iso/volume.py
 
 # Expose the port for access
-EXPOSE 3001
+EXPOSE 80
 
 # Run the Nginx server
-CMD ["/usr/sbin/nginx", "-g", "daemon off;"]
+CMD ["python3", "/iso/volume.py", "3001", "/tmp/volume/"]
