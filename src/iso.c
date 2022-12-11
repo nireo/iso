@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <xxhash.h>
 
 // Maximum size of a key
 #define KEY_SIZE 64
@@ -163,18 +164,21 @@ static char *_pick_volume(const char *key, size_t keylen) {
 }
 
 static char *_key_to_path(const char *key, size_t keylen) {
-  unsigned char md5_sum[MD5_DIGEST_LENGTH];
-  MD5(key, strlen(key), md5_sum);
+  XXH64_hash_t hash = XXH3_64bits(key, keylen);
+  unsigned char hash_chars[sizeof(XXH64_hash_t)];
+  memcpy(hash_chars, &hash, sizeof(hash));
 
   size_t base64_size;
   unsigned char *encoded = base64_encode(key, keylen, &base64_size);
 
   // 2 byte layers deep, meaning a fanout of 256; optimized for 16M files per
   // volume server
-  size_t nbytes =
-      snprintf(NULL, 0, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded) + 1;
+  size_t nbytes = snprintf(NULL, 0, "/%02x/%02x/%s", hash_chars[0],
+                           hash_chars[1], encoded) +
+                  1;
   char *path = malloc(nbytes * sizeof(char));
-  snprintf(path, nbytes, "/%02x/%02x/%s", md5_sum[0], md5_sum[1], encoded);
+  snprintf(path, nbytes, "/%02x/%02x/%s", hash_chars[0], hash_chars[1],
+           encoded);
   path[nbytes] = '\0';
   free(encoded);
 
