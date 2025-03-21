@@ -39,7 +39,64 @@ void handle_get(int client_socket, const char *path) {
   send_response(client_socket, 200, "OK", "text/html", response_body);
 }
 
-void parse_http_req(int client_socket) { char buffer[4096]; }
+void handle_req(int client_socket) {
+#define BUFFER_SIZE 4096
+  char buffer[BUFFER_SIZE];
+  char path[255];
+  char method[10];
+  char protocol[20];
+  int clen = 0;
+  char *body = NULL;
+  char *temp_body = NULL;
+
+  int received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+  if (received <= 0) {
+    return;
+  }
+  buffer[received] = '\0';
+  sscanf(buffer, "%s %s %s", method, path, protocol);
+
+  char *end = strstr(buffer, "\r\n\r\n");
+  if (end) {
+    end += 4; // skip the blank line
+    body = end;
+
+    char *clen_header = strstr(buffer, "Content-Length:");
+    if (clen_header) {
+      sscanf(clen_header, "Content-Length: %d", &clen);
+    }
+
+    const int already_received = (received - (end - buffer));
+    if (clen > already_received) {
+      int remaining = clen - already_received;
+      temp_body = malloc(clen + 1);
+      if (temp_body) {
+        memcpy(temp_body, body, already_received);
+        int total_read = already_received;
+        while (total_read < clen) {
+          received =
+              recv(client_socket, temp_body + total_read, clen - total_read, 0);
+          if (received <= 0)
+            break;
+          total_read += received;
+        }
+        temp_body[total_read] = '\0';
+        body = temp_body;
+      } else {
+      }
+    }
+  }
+
+  if (strcmp(method, "GET") == 0) {
+    handle_get(client_socket, path);
+  } else if (strcmp(method, "POST") == 0) {
+    // TODO: handle post
+  }
+
+  if (temp_body != NULL) {
+    free(temp_body);
+  }
+}
 
 typedef struct {
   char **volumes;
@@ -84,8 +141,7 @@ int main() {
       continue;
     }
 
-    handle_get(client_socket, "not supported yet lol");
-
+    handle_req(client_socket);
     close(client_socket);
   }
 
