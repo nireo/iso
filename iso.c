@@ -12,6 +12,159 @@
 #define MAX_HEADER_SIZE 1024
 #define BUFFER_SIZE 4096
 
+#define FILE_PATH_MAX_SIZE 128
+#define MAX_VOLUME_SIZE 64
+#define MAX_VOLUMES 6
+
+typedef struct {
+  char path[FILE_PATH_MAX_SIZE];
+  char volumes[MAX_VOLUME_SIZE][MAX_VOLUMES];
+  int vol_count;
+} FileMetadata;
+
+typedef struct {
+  FileMetadata *entries;
+  int size;
+  int capacity;
+  char *fpath;
+} MetadataStorage;
+
+MetadataStorage *metadata_storage_init(const char *filename) {
+  MetadataStorage *storage = (MetadataStorage *)malloc(sizeof(MetadataStorage));
+  if (!storage) {
+    return NULL;
+  }
+
+  storage->entries = (FileMetadata *)malloc(sizeof(FileMetadata) * 16);
+  if (!storage->entries) {
+    free(storage);
+    return NULL;
+  }
+
+  storage->size = 0;
+  storage->capacity = 16;
+  storage->fpath = strdup(filename);
+
+  FILE *file = fopen(filename, "rb");
+  if (file) {
+    fread(&storage->size, sizeof(int), 1, file);
+
+    if (storage->size > storage->capacity) {
+      FileMetadata *new_entries = (FileMetadata *)realloc(
+          storage->entries, sizeof(FileMetadata) * storage->size);
+      if (new_entries) {
+        storage->entries = new_entries;
+        storage->capacity = storage->size;
+      } else {
+        storage->size = storage->capacity;
+      }
+    }
+
+    fread(storage->entries, sizeof(FileMetadata), storage->size, file);
+    fclose(file);
+  }
+
+  return storage;
+}
+
+void metadata_storage_free(MetadataStorage *storage) {
+  if (storage) {
+    free(storage->entries);
+    free(storage->fpath);
+    free(storage);
+  }
+}
+
+int metadata_storage_dump(MetadataStorage *storage) {
+  if (!storage)
+    return -1;
+
+  // TODO: this is very stupid especially when doing this every time we insert
+  // something
+  FILE *file = fopen(storage->fpath, "wb");
+  if (!file)
+    return -1;
+
+  fwrite(&storage->size, sizeof(int), 1, file);
+  fwrite(storage->entries, sizeof(FileMetadata), storage->size, file);
+  fclose(file);
+
+  return 0;
+}
+
+static int find_entry(MetadataStorage *storage, const char *key) {
+  for (int i = 0; i < storage->size; i++) {
+    if (strcmp(storage->entries[i].path, key) == 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int metadata_storage_set(MetadataStorage *storage, const char *key,
+                         const char **values, int count) {
+  if (!storage || !key || count > MAX_VOLUMES) {
+    return -1;
+  }
+
+  int index = find_entry(storage, key);
+
+  if (index == -1) {
+    if (storage->size >= storage->capacity) {
+      int new_capacity = storage->capacity * 2;
+      FileMetadata *new_entries = (FileMetadata *)realloc(
+          storage->entries, sizeof(FileMetadata) * new_capacity);
+
+      if (!new_entries) {
+        return -1;
+      }
+
+      storage->entries = new_entries;
+      storage->capacity = new_capacity;
+    }
+
+    index = storage->size++;
+    strncpy(storage->entries[index].path, key, FILE_PATH_MAX_SIZE - 1);
+    storage->entries[index].path[MAX_HEADER_SIZE - 1] = '\0';
+  }
+
+  storage->entries[index].vol_count = count;
+  for (int i = 0; i < count; i++) {
+    strncpy(storage->entries[index].volumes[i], values[i], MAX_VOLUME_SIZE - 1);
+    storage->entries[index].volumes[i][MAX_VOLUME_SIZE - 1] = '\0';
+  }
+
+  return metadata_storage_dump(storage);
+}
+const char **metadata_storage_get(MetadataStorage *storage, const char *key,
+                                  int *count) {
+  if (!storage || !key || !count) {
+    *count = 0;
+    return NULL;
+  }
+
+  int index = find_entry(storage, key);
+  if (index == -1) {
+    *count = 0;
+    return NULL;
+  }
+
+  FileMetadata *entry = &storage->entries[index];
+  *count = entry->vol_count;
+
+  char **result = (char **)malloc(sizeof(char *) * entry->vol_count);
+  if (!result) {
+    *count = 0;
+    return NULL;
+  }
+
+  for (int i = 0; i < entry->vol_count; i++) {
+    result[i] = entry->volumes[i];
+  }
+
+  return (const char **)result;
+}
+
 void send_response(int client_socket, int status_code, const char *status_text,
                    const char *content_type, const char *body) {
   char header[MAX_HEADER_SIZE];
@@ -68,7 +221,6 @@ void handle_req(int client_socket) {
 
     const int already_received = (received - (end - buffer));
     if (clen > already_received) {
-      int remaining = clen - already_received;
       temp_body = malloc(clen + 1);
       if (temp_body) {
         memcpy(temp_body, body, already_received);
