@@ -3,18 +3,10 @@
 
 #include <leveldb/c.h>
 
-typedef struct iso {
-  leveldb_t *store;
+typedef struct {
+  leveldb_t *metadata;
   char **volumes;
   size_t volume_count;
-  char *index_path;
-
-  leveldb_writeoptions_t *wopts;
-  leveldb_readoptions_t *ropts;
-} iso_t;
-
-void start_http(const char *addr);
-void init_iso(char **volumes, size_t volume_count, char *index_path);
-void close_iso(void);
+} Iso;
 
 #endif
