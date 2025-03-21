@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,54 @@
 #define FILE_PATH_MAX_SIZE 128
 #define MAX_VOLUME_SIZE 64
 #define MAX_VOLUMES 6
+
+static char *key_to_path(const char *key, size_t keylen) {
+  unsigned int hash = 0;
+  for (size_t i = 0; i < keylen; i++) {
+    hash = ((hash << 5) + hash) + (unsigned char)key[i];
+  }
+
+  unsigned char hash_chars[2];
+  hash_chars[0] = (hash >> 8) & 0xFF;
+  hash_chars[1] = hash & 0xFF;
+
+  size_t encoded_size = 4 * ((keylen + 2) / 3) + 1;
+  char *encoded = malloc(encoded_size);
+  if (!encoded)
+    return NULL;
+
+  const char base64_chars[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+  size_t j = 0;
+  for (size_t i = 0; i < keylen; i += 3) {
+    unsigned int val =
+        ((i < keylen) ? ((unsigned char)key[i]) << 16 : 0) |
+        ((i + 1 < keylen) ? ((unsigned char)key[i + 1]) << 8 : 0) |
+        ((i + 2 < keylen) ? ((unsigned char)key[i + 2]) : 0);
+
+    encoded[j++] = base64_chars[(val >> 18) & 0x3F];
+    encoded[j++] = base64_chars[(val >> 12) & 0x3F];
+    encoded[j++] = (i + 1 < keylen) ? base64_chars[(val >> 6) & 0x3F] : '=';
+    encoded[j++] = (i + 2 < keylen) ? base64_chars[val & 0x3F] : '=';
+  }
+  encoded[j] = '\0';
+
+  size_t nbytes = snprintf(NULL, 0, "/%02x/%02x/%s", hash_chars[0],
+                           hash_chars[1], encoded) +
+                  1;
+  char *path = malloc(nbytes * sizeof(char));
+  if (!path) {
+    free(encoded);
+    return NULL;
+  }
+
+  snprintf(path, nbytes, "/%02x/%02x/%s", hash_chars[0], hash_chars[1],
+           encoded);
+  free(encoded);
+
+  return path;
+}
 
 typedef struct {
   char path[FILE_PATH_MAX_SIZE];
@@ -182,6 +231,35 @@ void send_response(int client_socket, int status_code, const char *status_text,
   send(client_socket, body, body_len, 0);
 }
 
+static int connect_to_forward_server(const char *addr) {
+  int forward_socket;
+  struct sockaddr_in server_addr;
+
+  if ((forward_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    perror("forward socket creation failed");
+    return -1;
+  }
+
+  memset(&server_addr, 0, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  // TODO: handle forward port or somethin
+  server_addr.sin_port = htons(PORT);
+
+  if (inet_pton(AF_INET, addr, &server_addr.sin_addr) < 0) {
+    perror("invalid address or adress not supported");
+    return -1;
+  }
+
+  if (connect(forward_socket, (struct sockaddr *)&server_addr,
+              sizeof(server_addr)) < 0) {
+    perror("connection to forward server failed");
+    close(forward_socket);
+    return -1;
+  }
+
+  return forward_socket;
+}
+
 void handle_get(int client_socket, const char *path) {
   char response_body[BUFFER_SIZE];
   snprintf(response_body, BUFFER_SIZE,
@@ -190,6 +268,11 @@ void handle_get(int client_socket, const char *path) {
            path);
 
   send_response(client_socket, 200, "OK", "text/html", response_body);
+}
+
+void handle_post(int client_socket, const char *path, const char *body,
+                 int clen, const char *headers) {
+  char *final_path = key_to_path(path, strlen(path));
 }
 
 void handle_req(int client_socket) {
@@ -259,6 +342,9 @@ int main() {
   int server_fd, client_socket;
   struct sockaddr_in address;
   int addrlen = sizeof(address);
+
+  printf("%s\n", key_to_path("test.mp4", strlen("test.mp4")));
+  printf("%s\n", key_to_path("another_test.mp4", strlen("another_test.mp4")));
 
   if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
     perror("socket creation failed");
