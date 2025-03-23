@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <leveldb/c.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <stddef.h>
@@ -9,6 +10,15 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#define DEBUG 1
+#if DEBUG
+#define DEBUG_LOG(msg, ...) printf("[DEBUG] " msg "\n", ##__VA_ARGS__)
+#else
+#define DEBUG_LOG(msg, ...)                                                    \
+  do {                                                                         \
+  } while (0) // Expands to nothing when DEBUG is 0
+#endif
 
 #define PORT 8080
 #define MAX_HEADER_SIZE 1024
@@ -22,6 +32,7 @@ typedef struct {
   uint16_t ports[16];
   size_t volume_count;
   char volumes[16][64];
+  leveldb_t *metadata;
 } Iso;
 
 static void add_volume(Iso *iso, const char *addr, uint16_t port) {
@@ -169,10 +180,9 @@ void handle_get(int client_socket, const char *path) {
 
 void handle_post(Iso *iso, int client_socket, const char *path,
                  const char *body, int clen) {
-  printf("writing file %s to volume idx", path);
   const int path_len = strlen(path);
   const int chosen_volume = pick_volume(iso, path, path_len);
-  printf("%d\n", chosen_volume);
+  DEBUG_LOG("sending file %s to volume %s", path, iso->volumes[chosen_volume]);
 
   char request_header[BUFFER_SIZE];
   snprintf(request_header, MAX_HEADER_SIZE,
@@ -183,6 +193,8 @@ void handle_post(Iso *iso, int client_socket, const char *path,
            "Connection: close\r\n"
            "\r\n",
            path, iso->volumes[chosen_volume], iso->ports[chosen_volume], clen);
+
+  DEBUG_LOG("sending request header:\n%s", request_header);
 
   const int socket = connect_to_forward_server(iso->volumes[chosen_volume],
                                                iso->ports[chosen_volume]);
@@ -195,6 +207,7 @@ void handle_post(Iso *iso, int client_socket, const char *path,
   }
 
   send(socket, request_header, strlen(request_header), 0);
+  DEBUG_LOG("sent request header");
   if (clen > 0 && body) {
     if (send(socket, body, clen, 0) < 0) {
       perror("error sending body to storage server.");
@@ -206,12 +219,13 @@ void handle_post(Iso *iso, int client_socket, const char *path,
                     response_body);
       return;
     }
+
+    DEBUG_LOG("successfully sent request body");
   }
 
   char response_buffer[BUFFER_SIZE];
   int bytes_read = 0;
   int total_read = 0;
-  char *response_data = NULL;
 
   bytes_read = recv(socket, response_buffer, BUFFER_SIZE - 1, 0);
   if (bytes_read <= 0) {
@@ -224,31 +238,12 @@ void handle_post(Iso *iso, int client_socket, const char *path,
   }
 
   response_buffer[bytes_read] = '\0';
-  response_data = strdup(response_buffer);
-  if (!response_data) {
-    close(socket);
-    send_response(client_socket, 500, "Internal Server Error", "text/html",
-                  "<html><body><h1>Error</h1><p>Memory allocation "
-                  "error</p></body></html>");
-    return;
-  }
+  DEBUG_LOG("received response buffer:\n%s", response_buffer);
 
   int status_code = 200;
   char status_text[100] = "OK";
-
-  sscanf(response_data, "HTTP/%*s %d %99[^\r\n]", &status_code, status_text);
-
-  char *body_start = strstr(response_data, "\r\n\r\n");
-  if (body_start) {
-    body_start += 4;
-    send_response(client_socket, status_code, status_text, "application/json",
-                  body_start);
-  } else {
-    send_response(client_socket, 200, "OK", "text/plain",
-                  "File upload processed");
-  }
-
-  free(response_data);
+  send_response(client_socket, 200, "OK", "text/plain",
+                "File upload processed");
   close(socket);
 }
 
@@ -297,13 +292,12 @@ void handle_req(Iso *iso, int client_socket) {
       }
     }
   }
-  printf("%s %s\n", method, path);
+  DEBUG_LOG("%s %s\n", method, path);
 
   if (strcmp(method, "GET") == 0) {
     handle_get(client_socket, path);
   } else if (strcmp(method, "POST") == 0) {
-    printf("handling post\n");
-    handle_post(iso, client_socket, path, temp_body, clen);
+    handle_post(iso, client_socket, path, temp_body ? temp_body : body, clen);
   }
 
   if (temp_body != NULL) {
