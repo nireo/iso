@@ -31,16 +31,10 @@ typedef struct {
   char *fpath;
 } MetadataStorage;
 
-MetadataStorage *metadata_storage_init(const char *filename) {
-  MetadataStorage *storage = (MetadataStorage *)malloc(sizeof(MetadataStorage));
-  if (!storage) {
-    return NULL;
-  }
-
+int metadata_storage_init(MetadataStorage *storage, const char *filename) {
   storage->entries = (FileMetadata *)malloc(sizeof(FileMetadata) * 16);
   if (!storage->entries) {
-    free(storage);
-    return NULL;
+    return -1;
   }
 
   storage->size = 0;
@@ -66,7 +60,7 @@ MetadataStorage *metadata_storage_init(const char *filename) {
     fclose(file);
   }
 
-  return storage;
+  return 0;
 }
 
 void metadata_storage_free(MetadataStorage *storage) {
@@ -168,10 +162,17 @@ const char **metadata_storage_get(MetadataStorage *storage, const char *key,
 }
 
 typedef struct {
-  char **volumes;
+  uint16_t ports[16];
   size_t volume_count;
   MetadataStorage *storage;
+  char volumes[16][64];
 } Iso;
+
+static void add_volume(Iso *iso, const char *addr, uint16_t port) {
+  memcpy(iso->volumes[iso->volume_count], addr, strlen(addr) + 1);
+  iso->ports[iso->volume_count] = port;
+  iso->volume_count++;
+}
 
 static char *key_to_path(const char *key, size_t keylen) {
   unsigned int hash = 0;
@@ -271,7 +272,7 @@ void send_response(int client_socket, int status_code, const char *status_text,
   send(client_socket, body, body_len, 0);
 }
 
-static int connect_to_forward_server(const char *addr) {
+static int connect_to_forward_server(const char *addr, uint16_t port) {
   int forward_socket;
   struct sockaddr_in server_addr;
 
@@ -283,7 +284,7 @@ static int connect_to_forward_server(const char *addr) {
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
   // TODO: handle forward port or somethin
-  server_addr.sin_port = htons(PORT);
+  server_addr.sin_port = htons(port);
 
   if (inet_pton(AF_INET, addr, &server_addr.sin_addr) < 0) {
     perror("invalid address or adress not supported");
@@ -312,8 +313,10 @@ void handle_get(int client_socket, const char *path) {
 
 void handle_post(Iso *iso, int client_socket, const char *path,
                  const char *body, int clen) {
+  printf("writing file %s to volume idx", path);
   const int path_len = strlen(path);
   const int chosen_volume = pick_volume(iso, path, path_len);
+  printf("%d\n", chosen_volume);
 
   char request_header[BUFFER_SIZE];
   snprintf(request_header, MAX_HEADER_SIZE,
@@ -324,9 +327,10 @@ void handle_post(Iso *iso, int client_socket, const char *path,
            "Connection: close\r\n"
            "X-Forwarded-By: DistributionServer\r\n"
            "\r\n",
-           path, iso->volumes[chosen_volume], 8000, clen);
+           path, iso->volumes[chosen_volume], iso->ports[chosen_volume], clen);
 
-  const int socket = connect_to_forward_server(iso->volumes[chosen_volume]);
+  const int socket = connect_to_forward_server(iso->volumes[chosen_volume],
+                                               iso->ports[chosen_volume]);
   if (socket < 0) {
     char response_body[BUFFER_SIZE];
     snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
@@ -335,6 +339,7 @@ void handle_post(Iso *iso, int client_socket, const char *path,
     return;
   }
 
+  send(socket, request_header, strlen(request_header), 0);
   if (clen > 0 && body) {
     if (send(socket, body, clen, 0) < 0) {
       perror("error sending body to storage server.");
@@ -437,10 +442,12 @@ void handle_req(Iso *iso, int client_socket) {
       }
     }
   }
+  printf("%s %s\n", method, path);
 
   if (strcmp(method, "GET") == 0) {
     handle_get(client_socket, path);
   } else if (strcmp(method, "POST") == 0) {
+    printf("handling post\n");
     handle_post(iso, client_socket, path, temp_body, clen);
   }
 
@@ -456,6 +463,15 @@ int main() {
 
   printf("%s\n", key_to_path("test.mp4", strlen("test.mp4")));
   printf("%s\n", key_to_path("another_test.mp4", strlen("another_test.mp4")));
+
+  Iso iso;
+  memset(&iso, 0, sizeof(Iso));
+
+  add_volume(&iso, "127.0.0.1", 8001);
+
+  int vol_idx = pick_volume(&iso, "lol.bat", strlen("lol.bat"));
+  printf("%d\n", vol_idx);
+  printf("%s\n", iso.volumes[vol_idx]);
 
   if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
     perror("socket creation failed");
@@ -490,7 +506,7 @@ int main() {
       continue;
     }
 
-    handle_req(client_socket);
+    handle_req(&iso, client_socket);
     close(client_socket);
   }
 

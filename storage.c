@@ -11,9 +11,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define PORT 8000
 #define BUFFER_SIZE 1024
-#define ROOT_DIR "files"
+char root_dir[64];
 
 int mkdirs(const char *path) {
   char tmp[256];
@@ -59,11 +58,11 @@ void url_to_filepath(const char *url, char *filepath, size_t size) {
   }
 
   if (strcmp(clean_url, "/") == 0) {
-    snprintf(filepath, size, "%s/index", ROOT_DIR);
+    snprintf(filepath, size, "%s/index", root_dir);
     return;
   }
 
-  snprintf(filepath, size, "%s%s", ROOT_DIR, clean_url);
+  snprintf(filepath, size, "%s%s", root_dir, clean_url);
 }
 
 void parse_request_header(const char *request, char *method, char *url,
@@ -168,12 +167,19 @@ void handle_request(int client_socket) {
   }
 }
 
-int main() {
+int main(int argc, char **argv) {
   int server_fd, client_socket;
   struct sockaddr_in address;
   int addrlen = sizeof(address);
 
-  if (mkdir(ROOT_DIR, 0755) != 0 && errno != EEXIST) {
+  if (argc < 3) {
+    fprintf(stderr, "port and/or root_dir not supplied");
+    exit(EXIT_FAILURE);
+  }
+
+  uint16_t port = atoi(argv[1]);
+  strcpy(root_dir, argv[2]);
+  if (mkdir(root_dir, 0755) != 0 && errno != EEXIST) {
     perror("Failed to create storage directory");
     exit(EXIT_FAILURE);
   }
@@ -191,7 +197,7 @@ int main() {
 
   address.sin_family = AF_INET;
   address.sin_addr.s_addr = INADDR_ANY;
-  address.sin_port = htons(PORT);
+  address.sin_port = htons(port);
 
   if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
     perror("Bind failed");
@@ -203,8 +209,8 @@ int main() {
     exit(EXIT_FAILURE);
   }
 
-  printf("Server started on port %d\n", PORT);
-  printf("Storage directory: %s\n", ROOT_DIR);
+  printf("Server started on port %d\n", port);
+  printf("Storage directory: %s\n", root_dir);
 
   while (1) {
     client_socket =
