@@ -1,3 +1,4 @@
+#include "util.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -70,48 +71,6 @@ url_to_filepath(const char* url, char* filepath, size_t size)
     snprintf(filepath, size, "%s%s", root_dir, clean_url);
 }
 
-ssize_t
-read_line(int socket, char* buffer, size_t max_len, int64_t deadline)
-{
-    size_t pos = 0;
-    char c;
-    ssize_t rc;
-
-    // Leave room for null terminator
-    max_len--;
-
-    while (pos < max_len) {
-        // Read one byte at a time
-        rc = brecv(socket, &c, 1, deadline);
-        if (rc < 0) {
-            return -1; // Error or timeout
-        }
-
-        if (c == '\r') {
-            // Check for \n part of \r\n
-            rc = brecv(socket, &c, 1, deadline);
-            if (rc < 0) {
-                return -1; // Error or timeout
-            }
-
-            if (c == '\n') {
-                break; // End of line found
-            } else {
-                // This is unexpected for HTTP, but handle it anyway
-                if (pos < max_len - 1) {
-                    buffer[pos++] = '\r';
-                    buffer[pos++] = c;
-                }
-            }
-        } else {
-            buffer[pos++] = c;
-        }
-    }
-
-    buffer[pos] = '\0'; // Null terminate
-    return pos;
-}
-
 coroutine void
 client_handler(int client_socket)
 {
@@ -125,7 +84,7 @@ client_handler(int client_socket)
     long content_length = 0;
     int64_t deadline = now() + 10000;
 
-    ssize_t bytes_read = read_line(client_socket, line, sizeof(line), deadline);
+    ssize_t bytes_read = read_header_line(client_socket, line, sizeof(line), deadline);
     if (bytes_read <= 0) {
         printf("Failed to read request line\n");
         hclose(client_socket);
@@ -136,7 +95,7 @@ client_handler(int client_socket)
     printf("Request: %s %s\n", method, url);
 
     while (1) {
-        bytes_read = read_line(client_socket, line, sizeof(line), deadline);
+        bytes_read = read_header_line(client_socket, line, sizeof(line), deadline);
         if (bytes_read < 0) {
             printf("Failed to read headers\n");
             hclose(client_socket);
@@ -147,7 +106,6 @@ client_handler(int client_socket)
             break;
         }
 
-        // Parse Content-Length header
         if (sscanf(line, "%63[^:]: %255s", header_name, header_value) == 2) {
             if (strcasecmp(header_name, "Content-Length") == 0) {
                 content_length = atol(header_value);
@@ -173,7 +131,6 @@ client_handler(int client_socket)
 
         char* buffer = malloc(content_length);
         int read = brecv(client_socket, buffer, content_length, -1);
-        printf("read %d bytes from socket\n", read);
 
         fwrite(buffer, 1, content_length, file);
         fclose(file);

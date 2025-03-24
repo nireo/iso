@@ -1,6 +1,9 @@
+#include "old/iso.h"
+#include "util.h"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <leveldb/c.h>
+#include <libdill.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <stddef.h>
@@ -294,18 +297,19 @@ send_file_to_storage(Iso* iso, int volume_index, const char* path, const char* b
         return -1;
     }
 
-    if (send(storage_socket, request_header, strlen(request_header), 0) < 0) {
+    if (bsend(storage_socket, request_header, strlen(request_header), -1) < 0) {
         perror("error sending response header");
         close(storage_socket);
         return -1;
     }
 
-    if (send(storage_socket, body, clen, 0) < 0) {
+    if (bsend(storage_socket, body, clen, -1) < 0) {
         perror("error sending body to storage server.");
         close(storage_socket);
         return -1;
     }
 
+    // TODO: brecv here will block since we're reading the whole buffer
     char response_buffer[BUFFER_SIZE];
     int bytes_read = 0;
     int total_read = 0;
@@ -411,54 +415,124 @@ handle_req(Iso* iso, int client_socket)
     }
 }
 
-int
-main()
+coroutine void
+req_handler(Iso* iso, int c_sock)
 {
-    int server_fd, client_socket;
-    struct sockaddr_in address;
-    int addrlen = sizeof(address);
+    char line[BUFFER_SIZE];
+    char method[16] = { 0 };
+    char url[256] = { 0 };
+    char header_name[64] = { 0 };
+    char header_value[256] = { 0 };
+    char filepath[512] = { 0 };
+    char dirpath[512] = { 0 };
+    long content_length = 0;
+    int64_t deadline = now() + 10000;
+
+    ssize_t bytes_read = read_header_line(c_sock, line, sizeof(line), deadline);
+    if (bytes_read <= 0) {
+        printf("Failed to read request line\n");
+        hclose(c_sock);
+        return;
+    }
+
+    sscanf(line, "%15s %255s", method, url);
+    printf("Request: %s %s\n", method, url);
+
+    while (1) {
+        bytes_read = read_header_line(c_sock, line, sizeof(line), deadline);
+        if (bytes_read < 0) {
+            printf("Failed to read headers\n");
+            hclose(c_sock);
+            return;
+        }
+
+        if (bytes_read == 0 && line[0] == '\0') {
+            break;
+        }
+
+        if (sscanf(line, "%63[^:]: %255s", header_name, header_value) == 2) {
+            if (strcasecmp(header_name, "Content-Length") == 0) {
+                content_length = atol(header_value);
+                printf("Content-Length: %ld\n", content_length);
+            }
+        }
+    }
+
+    printf("%s %s -> %s\n", method, url, filepath);
+    if (strcmp(method, "POST") == 0 && content_length > 0) {
+        char* body = NULL;
+        if (content_length < 4096) {
+            char temp_body[4096];
+            bytes_read = brecv(c_sock, temp_body, content_length, -1);
+            if (bytes_read < 0) {
+                perror("failed reading from socket");
+                char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 22\r\n\r\nFailed to create file\n";
+                bsend(c_sock, response, strlen(response), deadline);
+                hclose(c_sock);
+                return;
+            }
+            body = temp_body;
+        } else {
+            char* temp_body = malloc(content_length);
+            int total_read = 0;
+
+            while (total_read < content_length) {
+                int got = brecv(c_sock, temp_body + total_read, content_length - total_read, -1);
+                if (got <= 0)
+                    break;
+
+                total_read += got;
+            }
+            body = temp_body;
+        }
+
+        handle_post(iso, c_sock, url, body, content_length);
+    }
+
+    hclose(c_sock);
+}
+
+int
+main(int argc, char** argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "port and/or root_dir not supplied");
+        exit(EXIT_FAILURE);
+    }
+
+    uint16_t port = atoi(argv[1]);
+
+    struct ipaddr addr;
+    int rc = ipaddr_local(&addr, NULL, port, 0);
+    if (rc < 0) {
+        perror("cannot create local address");
+        exit(EXIT_FAILURE);
+    }
+
+    int ln = tcp_listen(&addr, 10);
+    if (ln < 0) {
+        perror("error creating listener");
+        exit(EXIT_FAILURE);
+    }
 
     Iso iso;
     memset(&iso, 0, sizeof(Iso));
     add_volume(&iso, "127.0.0.1", 8001);
 
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("socket creation failed");
-        exit(1);
-    }
+    while (1) {
+        int c_socket = tcp_accept(ln, NULL, -1);
+        printf("got socket: %d\n", c_socket);
+        if (c_socket < 0) {
+            if (errno == ETIMEDOUT) {
+                continue;
+            }
 
-    int opt = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt,
-            sizeof(opt))) {
-        perror("setsockopt failed");
-        exit(1);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-        perror("bind failed");
-        exit(1);
-    }
-
-    if (listen(server_fd, 10) < 0) {
-        perror("listen failed");
-        exit(1);
-    }
-
-    for (;;) {
-        if ((client_socket = accept(server_fd, (struct sockaddr*)&address,
-                 (socklen_t*)&addrlen)) < 0) {
             perror("accept failed");
             continue;
         }
 
-        handle_req(&iso, client_socket);
-        close(client_socket);
+        go(req_handler(&iso, c_socket));
     }
-
-    close(server_fd);
+    hclose(ln);
     return 0;
 }
