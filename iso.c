@@ -31,6 +31,7 @@
 typedef struct {
     uint16_t ports[16];
     size_t volume_count;
+    int replication_factor;
     char volumes[16][64];
     leveldb_t* metadata;
 } Iso;
@@ -103,7 +104,7 @@ get_key_volumes(Iso* iso, const char* key, size_t keylen, int count)
 
     qsort(vols, iso->volume_count, sizeof(SortVolume), compare_sortvol);
 
-    int* result = malloc(count * sizeof(int) + 1);
+    int* result = malloc(count * sizeof(int) + 1) iso;
     if (!result) {
         free(vols);
         return NULL;
@@ -273,14 +274,9 @@ handle_get(int client_socket, const char* path)
     send_response(client_socket, 200, "OK", "text/html", response_body);
 }
 
-void
-handle_post(Iso* iso, int client_socket, const char* path,
-    const char* body, int clen)
+int
+send_file_to_storage(Iso* iso, int volume_index, const char* path, const char* body, int clen)
 {
-    const int path_len = strlen(path);
-    const int chosen_volume = pick_volume(iso, path, path_len);
-    DEBUG_LOG("sending file %s to volume %s", path, iso->volumes[chosen_volume]);
-
     char request_header[BUFFER_SIZE];
     snprintf(request_header, MAX_HEADER_SIZE,
         "POST %s HTTP/1.1\r\n"
@@ -289,44 +285,60 @@ handle_post(Iso* iso, int client_socket, const char* path,
         "Content-Length: %d\r\n"
         "Connection: close\r\n"
         "\r\n",
-        path, iso->volumes[chosen_volume], iso->ports[chosen_volume], clen);
+        path, iso->volumes[volume_index], iso->ports[volume_index], clen);
 
-    DEBUG_LOG("sending request header:\n%s", request_header);
-
-    const int socket = connect_to_forward_server(iso->volumes[chosen_volume],
-        iso->ports[chosen_volume]);
-    if (socket < 0) {
-        char response_body[BUFFER_SIZE];
-        snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
-        send_response(client_socket, 502, "Bad Gateway", "text/plain",
-            response_body);
-        return;
+    const int storage_socket = connect_to_forward_server(iso->volumes[volume_index], iso->ports[volume_index]);
+    DEBUG_LOG("sending file data to storage server at: %s:%d", iso->volumes[volume_index], iso->ports[volume_index]);
+    if (storage_socket < 0) {
+        perror("error connecting to server socket");
+        return -1;
     }
 
-    send(socket, request_header, strlen(request_header), 0);
-    DEBUG_LOG("sent request header");
-    if (clen > 0 && body) {
-        if (send(socket, body, clen, 0) < 0) {
-            perror("error sending body to storage server.");
-            close(socket);
+    if (send(storage_socket, request_header, strlen(request_header), 0) < 0) {
+        perror("error sending response header");
+        close(storage_socket);
+        return -1;
+    }
 
-            char response_body[BUFFER_SIZE];
-            snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
-            send_response(client_socket, 502, "Bad Gateway", "text/plain",
-                response_body);
-            return;
-        }
-
-        DEBUG_LOG("successfully sent request body");
+    if (send(storage_socket, body, clen, 0) < 0) {
+        perror("error sending body to storage server.");
+        close(storage_socket);
+        return -1;
     }
 
     char response_buffer[BUFFER_SIZE];
     int bytes_read = 0;
     int total_read = 0;
 
-    bytes_read = recv(socket, response_buffer, BUFFER_SIZE - 1, 0);
+    bytes_read = recv(storage_socket, response_buffer, BUFFER_SIZE - 1, 0);
     if (bytes_read <= 0) {
-        close(socket);
+        close(storage_socket);
+        return -1;
+    }
+    response_buffer[bytes_read] = '\0';
+    DEBUG_LOG("received response buffer:\n%s", response_buffer);
+    close(storage_socket);
+    return 0;
+}
+
+void
+handle_post(Iso* iso, int client_socket, const char* path,
+    const char* body, int clen)
+{
+    const int path_len = strlen(path);
+    const int chosen_volume = pick_volume(iso, path, path_len);
+    int* replication_volumes = get_key_volumes(iso, path, path_len, iso->replication_factor);
+
+    int failures = 0;
+    for (int i = 0; replication_volumes[i] != -1; ++i) {
+        const int ret = send_file_to_storage(iso, replication_volumes[i], path, body, clen);
+        if (ret != 0) {
+            failures += 1;
+        }
+    }
+
+    if (failures > 0) {
+        free(replication_volumes);
         char response_body[BUFFER_SIZE];
         snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
         send_response(client_socket, 502, "Bad Gateway", "text/plain",
@@ -334,14 +346,9 @@ handle_post(Iso* iso, int client_socket, const char* path,
         return;
     }
 
-    response_buffer[bytes_read] = '\0';
-    DEBUG_LOG("received response buffer:\n%s", response_buffer);
-
-    int status_code = 200;
-    char status_text[100] = "OK";
+    free(replication_volumes);
     send_response(client_socket, 200, "OK", "text/plain",
         "File upload processed");
-    close(socket);
 }
 
 void
