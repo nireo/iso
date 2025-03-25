@@ -1,4 +1,3 @@
-#include "old/iso.h"
 #include "util.h"
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -180,41 +179,6 @@ key_to_path(const char* key, size_t keylen)
     return path;
 }
 
-static int
-pick_volume(Iso* fs, const char* key, size_t keylen)
-{
-    int best_volume = 0;
-    unsigned long best_score = ULONG_MAX;
-    int first = 1;
-
-    for (int i = 0; i < fs->volume_count; ++i) {
-        unsigned long curr_score = 0;
-        size_t vol_len = strlen(fs->volumes[i]);
-
-        const unsigned long FNV_PRIME = 16777619UL;
-        const unsigned long FNV_OFFSET = 2166136261UL;
-
-        curr_score = FNV_OFFSET;
-        for (size_t j = 0; j < vol_len; j++) {
-            curr_score ^= (unsigned char)fs->volumes[i][j];
-            curr_score *= FNV_PRIME;
-        }
-
-        for (size_t j = 0; j < keylen; j++) {
-            curr_score ^= (unsigned char)key[j];
-            curr_score *= FNV_PRIME;
-        }
-
-        if (first == 1 || curr_score < best_score) {
-            first = 0;
-            best_score = curr_score;
-            best_volume = i;
-        }
-    }
-
-    return best_volume;
-}
-
 void
 send_response(int client_socket, int status_code, const char* status_text,
     const char* content_type, const char* body)
@@ -230,39 +194,18 @@ send_response(int client_socket, int status_code, const char* status_text,
         "\r\n",
         status_code, status_text, content_type, body_len);
 
-    send(client_socket, header, strlen(header), 0);
-    send(client_socket, body, body_len, 0);
+    bsend(client_socket, header, strlen(header), -1);
+    bsend(client_socket, body, body_len, -1);
 }
 
 static int
 connect_to_forward_server(const char* addr, uint16_t port)
 {
-    int forward_socket;
-    struct sockaddr_in server_addr;
-
-    if ((forward_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("forward socket creation failed");
-        return -1;
-    }
-
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    // TODO: handle forward port or somethin
-    server_addr.sin_port = htons(port);
-
-    if (inet_pton(AF_INET, addr, &server_addr.sin_addr) < 0) {
-        perror("invalid address or adress not supported");
-        return -1;
-    }
-
-    if (connect(forward_socket, (struct sockaddr*)&server_addr,
-            sizeof(server_addr)) < 0) {
-        perror("connection to forward server failed");
-        close(forward_socket);
-        return -1;
-    }
-
-    return forward_socket;
+    struct ipaddr ip_addr;
+    // TODO: support non local ip addrs
+    ipaddr_local(&ip_addr, NULL, port, 0);
+    int s = tcp_connect(&ip_addr, -1);
+    return s;
 }
 
 void
@@ -299,29 +242,28 @@ send_file_to_storage(Iso* iso, int volume_index, const char* path, const char* b
 
     if (bsend(storage_socket, request_header, strlen(request_header), -1) < 0) {
         perror("error sending response header");
-        close(storage_socket);
+        hclose(storage_socket);
         return -1;
     }
 
     if (bsend(storage_socket, body, clen, -1) < 0) {
         perror("error sending body to storage server.");
-        close(storage_socket);
+        hclose(storage_socket);
         return -1;
     }
 
-    // TODO: brecv here will block since we're reading the whole buffer
-    char response_buffer[BUFFER_SIZE];
-    int bytes_read = 0;
-    int total_read = 0;
-
-    bytes_read = recv(storage_socket, response_buffer, BUFFER_SIZE - 1, 0);
-    if (bytes_read <= 0) {
-        close(storage_socket);
+    Response resp;
+    if (get_resp_from_socket(storage_socket, &resp) < 0) {
+        hclose(storage_socket);
         return -1;
     }
-    response_buffer[bytes_read] = '\0';
-    DEBUG_LOG("received response buffer:\n%s", response_buffer);
-    close(storage_socket);
+
+    if (resp.status_code != 201) {
+        hclose(storage_socket);
+        return -1;
+    }
+
+    hclose(storage_socket);
     return 0;
 }
 
@@ -330,8 +272,16 @@ handle_post(Iso* iso, int client_socket, const char* path,
     const char* body, int clen)
 {
     const int path_len = strlen(path);
-    const int chosen_volume = pick_volume(iso, path, path_len);
     int* replication_volumes = get_key_volumes(iso, path, path_len, iso->replication_factor);
+
+    // create a coroutine bundle such that we can ensure that each goroutine has finished before this
+    // // stops blocking.
+    // int r_b = bundle();
+    // const int deadline = now() + 10000;
+    //
+    // // wait for all of the coroutines to be finished
+    // bundle_wait(r_b, now);
+    // hclose(r_b);
 
     int failures = 0;
     for (int i = 0; replication_volumes[i] != -1; ++i) {
@@ -355,138 +305,30 @@ handle_post(Iso* iso, int client_socket, const char* path,
         "File upload processed");
 }
 
-void
-handle_req(Iso* iso, int client_socket)
-{
-    char buffer[BUFFER_SIZE];
-    char path[255];
-    char method[10];
-    char protocol[20];
-    int clen = 0;
-    char* body = NULL;
-    char* temp_body = NULL;
-
-    int received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-    if (received <= 0) {
-        return;
-    }
-    buffer[received] = '\0';
-    sscanf(buffer, "%s %s %s", method, path, protocol);
-
-    char* end = strstr(buffer, "\r\n\r\n");
-    if (end) {
-        end += 4; // skip the blank line
-        body = end;
-
-        char* clen_header = strstr(buffer, "Content-Length:");
-        if (clen_header) {
-            sscanf(clen_header, "Content-Length: %d", &clen);
-        }
-
-        const int already_received = (received - (end - buffer));
-        if (clen > already_received) {
-            temp_body = malloc(clen + 1);
-            if (temp_body) {
-                memcpy(temp_body, body, already_received);
-                int total_read = already_received;
-                while (total_read < clen) {
-                    received =
-                        recv(client_socket, temp_body + total_read, clen - total_read, 0);
-                    if (received <= 0)
-                        break;
-                    total_read += received;
-                }
-                temp_body[total_read] = '\0';
-                body = temp_body;
-            } else {
-            }
-        }
-    }
-    DEBUG_LOG("%s %s\n", method, path);
-
-    if (strcmp(method, "GET") == 0) {
-        handle_get(client_socket, path);
-    } else if (strcmp(method, "POST") == 0) {
-        handle_post(iso, client_socket, path, temp_body ? temp_body : body, clen);
-    }
-
-    if (temp_body != NULL) {
-        free(temp_body);
-    }
-}
-
 coroutine void
 req_handler(Iso* iso, int c_sock)
 {
-    char line[BUFFER_SIZE];
-    char method[16] = { 0 };
-    char url[256] = { 0 };
-    char header_name[64] = { 0 };
-    char header_value[256] = { 0 };
-    char filepath[512] = { 0 };
-    char dirpath[512] = { 0 };
-    long content_length = 0;
-    int64_t deadline = now() + 10000;
-
-    ssize_t bytes_read = read_header_line(c_sock, line, sizeof(line), deadline);
-    if (bytes_read <= 0) {
-        printf("Failed to read request line\n");
+    Request req;
+    if (get_req_from_socket(c_sock, &req) < 0) {
         hclose(c_sock);
         return;
     }
+    const int deadline = now() + 10000;
 
-    sscanf(line, "%15s %255s", method, url);
-    printf("Request: %s %s\n", method, url);
+    printf("%s %s\n", req.method, req.url);
+    if (strcmp(req.method, "POST") == 0 && req.content_length > 0) {
+        char* temp_body = malloc(req.content_length);
+        int total_read = 0;
 
-    while (1) {
-        bytes_read = read_header_line(c_sock, line, sizeof(line), deadline);
-        if (bytes_read < 0) {
-            printf("Failed to read headers\n");
-            hclose(c_sock);
-            return;
+        while (total_read < req.content_length) {
+            int got = brecv(c_sock, temp_body + total_read, req.content_length - total_read, -1);
+            if (got <= 0)
+                break;
+
+            total_read += got;
         }
 
-        if (bytes_read == 0 && line[0] == '\0') {
-            break;
-        }
-
-        if (sscanf(line, "%63[^:]: %255s", header_name, header_value) == 2) {
-            if (strcasecmp(header_name, "Content-Length") == 0) {
-                content_length = atol(header_value);
-                printf("Content-Length: %ld\n", content_length);
-            }
-        }
-    }
-
-    printf("%s %s -> %s\n", method, url, filepath);
-    if (strcmp(method, "POST") == 0 && content_length > 0) {
-        char* body = NULL;
-        if (content_length < 4096) {
-            char temp_body[4096];
-            bytes_read = brecv(c_sock, temp_body, content_length, -1);
-            if (bytes_read < 0) {
-                perror("failed reading from socket");
-                char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 22\r\n\r\nFailed to create file\n";
-                bsend(c_sock, response, strlen(response), deadline);
-                hclose(c_sock);
-                return;
-            }
-            body = temp_body;
-        } else {
-            char* temp_body = malloc(content_length);
-            int total_read = 0;
-
-            while (total_read < content_length) {
-                int got = brecv(c_sock, temp_body + total_read, content_length - total_read, -1);
-                if (got <= 0)
-                    break;
-
-                total_read += got;
-            }
-            body = temp_body;
-        }
-
-        handle_post(iso, c_sock, url, body, content_length);
+        handle_post(iso, c_sock, req.url, temp_body, req.content_length);
     }
 
     hclose(c_sock);
@@ -495,8 +337,8 @@ req_handler(Iso* iso, int c_sock)
 int
 main(int argc, char** argv)
 {
-    if (argc < 3) {
-        fprintf(stderr, "port and/or root_dir not supplied");
+    if (argc < 2) {
+        fprintf(stderr, "port not supplied");
         exit(EXIT_FAILURE);
     }
 
@@ -518,6 +360,9 @@ main(int argc, char** argv)
     Iso iso;
     memset(&iso, 0, sizeof(Iso));
     add_volume(&iso, "127.0.0.1", 8001);
+    iso.replication_factor = 3;
+
+    int b = bundle();
 
     while (1) {
         int c_socket = tcp_accept(ln, NULL, -1);
@@ -531,8 +376,10 @@ main(int argc, char** argv)
             continue;
         }
 
-        go(req_handler(&iso, c_socket));
+        bundle_go(b, req_handler(&iso, c_socket));
     }
+
+    hclose(b);
     hclose(ln);
     return 0;
 }

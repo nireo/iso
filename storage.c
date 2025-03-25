@@ -173,6 +173,7 @@ main(int argc, char** argv)
 
     printf("Server started on port %d\n", port);
     printf("Storage directory: %s\n", root_dir);
+    int b = bundle();
 
     while (1) {
         int c_socket = tcp_accept(ln, NULL, -1);
@@ -186,8 +187,10 @@ main(int argc, char** argv)
             continue;
         }
 
-        go(client_handler(c_socket));
+        bundle_go(b, client_handler(c_socket));
     }
+    hclose(b);
     hclose(ln);
+
     return 0;
 }
