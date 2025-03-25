@@ -107,7 +107,7 @@ get_key_volumes(Iso* iso, const char* key, size_t keylen, int count)
 
     qsort(vols, iso->volume_count, sizeof(SortVolume), compare_sortvol);
 
-    int* result = malloc(count * sizeof(int) + 1) iso;
+    int* result = malloc(count * sizeof(int) + 1);
     if (!result) {
         free(vols);
         return NULL;

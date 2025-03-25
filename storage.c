@@ -74,50 +74,19 @@ url_to_filepath(const char* url, char* filepath, size_t size)
 coroutine void
 client_handler(int client_socket)
 {
-    char line[BUFFER_SIZE];
-    char method[16] = { 0 };
-    char url[256] = { 0 };
-    char header_name[64] = { 0 };
-    char header_value[256] = { 0 };
     char filepath[512] = { 0 };
     char dirpath[512] = { 0 };
-    long content_length = 0;
-    int64_t deadline = now() + 10000;
-
-    ssize_t bytes_read = read_header_line(client_socket, line, sizeof(line), deadline);
-    if (bytes_read <= 0) {
-        printf("Failed to read request line\n");
+    Request req;
+    if (get_req_from_socket(client_socket, &req) < 0) {
         hclose(client_socket);
         return;
     }
+    const int64_t deadline = now() + 10000;
 
-    sscanf(line, "%15s %255s", method, url);
-    printf("Request: %s %s\n", method, url);
+    url_to_filepath(req.url, filepath, sizeof(filepath));
+    printf("%s %s -> %s\n", req.method, req.url, filepath);
 
-    while (1) {
-        bytes_read = read_header_line(client_socket, line, sizeof(line), deadline);
-        if (bytes_read < 0) {
-            printf("Failed to read headers\n");
-            hclose(client_socket);
-            return;
-        }
-
-        if (bytes_read == 0 && line[0] == '\0') {
-            break;
-        }
-
-        if (sscanf(line, "%63[^:]: %255s", header_name, header_value) == 2) {
-            if (strcasecmp(header_name, "Content-Length") == 0) {
-                content_length = atol(header_value);
-                printf("Content-Length: %ld\n", content_length);
-            }
-        }
-    }
-
-    url_to_filepath(url, filepath, sizeof(filepath));
-    printf("%s %s -> %s\n", method, url, filepath);
-
-    if (strcmp(method, "POST") == 0 && content_length > 0) {
+    if (strcmp(req.method, "POST") == 0 && req.content_length > 0) {
         strcpy(dirpath, filepath);
         mkdirs(dirname(dirpath));
 
@@ -129,16 +98,16 @@ client_handler(int client_socket)
             return;
         }
 
-        char* buffer = malloc(content_length);
-        int read = brecv(client_socket, buffer, content_length, -1);
+        char* buffer = malloc(req.content_length);
+        int read = brecv(client_socket, buffer, req.content_length, -1);
 
-        fwrite(buffer, 1, content_length, file);
+        fwrite(buffer, 1, req.content_length, file);
         fclose(file);
         free(buffer);
 
         char response[] = "HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\nCreated\n";
         bsend(client_socket, response, strlen(response), deadline);
-    } else if (strcmp(method, "GET") == 0) {
+    } else if (strcmp(req.method, "GET") == 0) {
         FILE* file = fopen(filepath, "rb");
         if (!file) {
             char response[] =
@@ -159,6 +128,7 @@ client_handler(int client_socket)
             "application/octet-stream\r\n\r\n",
             file_size);
 
+        size_t bytes_read = 0;
         bsend(client_socket, header, strlen(header), -1);
         while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
             bsend(client_socket, buffer, bytes_read, 0);
