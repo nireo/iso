@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <netinet/in.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,9 @@ typedef struct {
     int replication_factor;
     char volumes[16][64];
     leveldb_t* metadata;
+    leveldb_writeoptions_t* woptions;
+    leveldb_readoptions_t* roptions;
+    leveldb_options_t* opts;
 } Iso;
 
 static void
@@ -208,16 +212,151 @@ connect_to_forward_server(const char* addr, uint16_t port)
     return s;
 }
 
-void
-handle_get(int client_socket, const char* path)
-{
-    char response_body[BUFFER_SIZE];
-    snprintf(response_body, BUFFER_SIZE,
-        "<html><body><h1>Hello from C HTTP Server</h1>"
-        "<p>GET request received for path: %s</p></body></html>",
-        path);
+typedef struct {
+    uint16_t port;
+    char addr[64];
+} DecodedVolume;
 
-    send_response(client_socket, 200, "OK", "text/html", response_body);
+static char*
+serialize_volume_data(Iso* iso, int* rvols)
+{
+    uint16_t count = 0;
+    size_t string_size = 0;
+    for (int i = 0; rvols[i] != -1; ++i) {
+        count++;
+        string_size += strlen(iso->volumes[i]);
+    }
+
+    // 2 bytes for amount of volumes
+    // volume_count * 2 bytes for ports
+    // space for all strings + comma between addresses
+    size_t buf_size = sizeof(uint16_t) + count * sizeof(uint16_t) + (string_size + count) * sizeof(char);
+    size_t offset = 0;
+
+    char* buffer = malloc(buf_size);
+    if (!buffer) {
+        fprintf(stderr, "cannot allocate memory for volumes");
+        return NULL;
+    }
+
+    memcpy(buffer + offset, &count, sizeof(uint16_t));
+    offset += 2;
+
+    for (int i = 0; i < count; ++i) {
+        memcpy(buffer + offset, &iso->ports[rvols[i]], sizeof(uint16_t));
+        offset += sizeof(uint16_t);
+    }
+
+    for (int i = 0; i < count; ++i) {
+        size_t s_size = strlen(iso->volumes[rvols[i]]);
+        memcpy(buffer + offset, iso->volumes[rvols[i]], s_size);
+        offset += s_size;
+        buffer[offset] = ',';
+        ++offset;
+    }
+
+    return buffer;
+}
+
+static DecodedVolume*
+decode_volumes(char* data, size_t* count)
+{
+    size_t offset = 0;
+    uint16_t hc;
+    memcpy(&hc, data, sizeof(uint16_t));
+    offset += 2;
+
+    DecodedVolume* vols = calloc(hc, sizeof(DecodedVolume));
+    if (!vols) {
+        fprintf(stderr, "cannot alloc volumes");
+        return NULL;
+    }
+
+    for (uint16_t i = 0; i < hc; ++i) {
+        memcpy(&vols[i].port, data + offset, sizeof(uint16_t));
+        offset += 2;
+    }
+
+    for (uint16_t i = 0; i < hc; ++i) {
+        int volume_ptr = 0;
+        while (data[offset] != ',') {
+            vols[i].addr[volume_ptr++] = data[offset++];
+        }
+        offset++; // skip the next comma
+        vols[i].addr[volume_ptr] = '\0';
+    }
+
+    *count = (size_t)hc;
+
+    return vols;
+}
+
+static int
+store_replication_info(Iso* iso, const char* path, int* volume_indices)
+{
+    char* err = NULL;
+    char value_buf[BUFFER_SIZE];
+    int value_len = 0;
+
+    // Format: volume_count:addr1:port1:addr2:port2:...
+    value_len = snprintf(value_buf, BUFFER_SIZE, "%d", iso->replication_factor);
+
+    for (int i = 0; volume_indices[i] != -1; i++) {
+        int idx = volume_indices[i];
+        value_len += snprintf(value_buf + value_len, BUFFER_SIZE - value_len,
+            ":%s:%d",
+            iso->volumes[idx],
+            iso->ports[idx]);
+    }
+
+    DEBUG_LOG("Storing replication info for path %s: %s", path, value_buf);
+
+    leveldb_put(iso->metadata, iso->woptions,
+        path, strlen(path),
+        value_buf, value_len,
+        &err);
+
+    if (err != NULL) {
+        fprintf(stderr, "Failed to store replication info: %s\n", err);
+        leveldb_free(err);
+        return -1;
+    }
+
+    return 0;
+}
+
+static char*
+get_replication_info(Iso* iso, const char* path)
+{
+    char* err = NULL;
+    size_t value_len;
+
+    char* value = leveldb_get(iso->metadata, iso->roptions,
+        path, strlen(path),
+        &value_len, &err);
+
+    if (err != NULL) {
+        fprintf(stderr, "Failed to get replication info: %s\n", err);
+        leveldb_free(err);
+        return NULL;
+    }
+
+    if (value == NULL) {
+        return NULL;
+    }
+
+    // Create a null-terminated string
+    char* result = malloc(value_len + 1);
+    if (!result) {
+        leveldb_free(value);
+        return NULL;
+    }
+
+    memcpy(result, value, value_len);
+    result[value_len] = '\0';
+
+    leveldb_free(value);
+    return result;
 }
 
 int
@@ -305,6 +444,12 @@ handle_post(Iso* iso, int client_socket, const char* path,
         "File upload processed");
 }
 
+static int
+handle_get(Iso* iso, int c_sock)
+{
+    return 0;
+}
+
 coroutine void
 req_handler(Iso* iso, int c_sock)
 {
@@ -329,9 +474,43 @@ req_handler(Iso* iso, int c_sock)
         }
 
         handle_post(iso, c_sock, req.url, temp_body, req.content_length);
+    } else if (strcmp(req.method, "GET") == 0) {
     }
 
     hclose(c_sock);
+}
+
+static int
+init_leveldb(Iso* iso)
+{
+    char* err = NULL;
+    iso->opts = leveldb_options_create();
+    leveldb_options_set_create_if_missing(iso->opts, 1);
+
+    iso->woptions = leveldb_writeoptions_create();
+    iso->roptions = leveldb_readoptions_create();
+
+    iso->metadata = leveldb_open(iso->opts, "./metadata.db", &err);
+    if (err != NULL) {
+        fprintf(stderr, "failed to open leveldb: %s\n", err);
+        leveldb_free(err);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void
+close_leveldb(Iso* iso)
+{
+    if (iso->metadata)
+        leveldb_close(iso->metadata);
+    if (iso->opts)
+        leveldb_options_destroy(iso->opts);
+    if (iso->woptions)
+        leveldb_writeoptions_destroy(iso->woptions);
+    if (iso->roptions)
+        leveldb_readoptions_destroy(iso->roptions);
 }
 
 int
@@ -360,7 +539,9 @@ main(int argc, char** argv)
     Iso iso;
     memset(&iso, 0, sizeof(Iso));
     add_volume(&iso, "127.0.0.1", 8001);
+    add_volume(&iso, "127.0.0.1", 8002);
     iso.replication_factor = 3;
+    init_leveldb(&iso);
 
     int b = bundle();
 
@@ -381,5 +562,6 @@ main(int argc, char** argv)
 
     hclose(b);
     hclose(ln);
+    close_leveldb(&iso);
     return 0;
 }
