@@ -15,12 +15,12 @@ typedef struct {
 typedef struct {
     int status_code;
     char status_message[256];
+    long content_length;
 } Response;
 
 ssize_t
 read_header_line(int socket, char* buffer, size_t max_len, int64_t deadline);
 int get_req_from_socket(int socket, Request* req);
 int get_resp_from_socket(int socket, Response* req);
-void cleanup_req(Request* req);
 
 #endif

@@ -80,6 +80,8 @@ get_req_from_socket(int socket, Request* req)
 int
 get_resp_from_socket(int socket, Response* resp)
 {
+    char header_name[64] = { 0 };
+    char header_value[256] = { 0 };
     char line[512];
     const int64_t deadline = now() + 10000;
 
@@ -100,6 +102,12 @@ get_resp_from_socket(int socket, Response* resp)
         }
         if (bytes_read == 0 && line[0] == '\0') {
             break;
+        }
+
+        if (sscanf(line, "%63[^:]: %255s", header_name, header_value) == 2) {
+            if (strcasecmp(header_name, "Content-Length") == 0) {
+                resp->content_length = atol(header_value);
+            }
         }
     }
 

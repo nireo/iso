@@ -218,7 +218,7 @@ typedef struct {
 } DecodedVolume;
 
 static char*
-serialize_volume_data(Iso* iso, int* rvols)
+serialize_volume_data(Iso* iso, int* rvols, size_t* size)
 {
     uint16_t count = 0;
     size_t string_size = 0;
@@ -231,6 +231,7 @@ serialize_volume_data(Iso* iso, int* rvols)
     // volume_count * 2 bytes for ports
     // space for all strings + comma between addresses
     size_t buf_size = sizeof(uint16_t) + count * sizeof(uint16_t) + (string_size + count) * sizeof(char);
+    *size = buf_size;
     size_t offset = 0;
 
     char* buffer = malloc(buf_size);
@@ -411,6 +412,7 @@ handle_post(Iso* iso, int client_socket, const char* path,
     const char* body, int clen)
 {
     const int path_len = strlen(path);
+    char* encoded_path = key_to_path(path, path_len);
     int* replication_volumes = get_key_volumes(iso, path, path_len, iso->replication_factor);
 
     // create a coroutine bundle such that we can ensure that each goroutine has finished before this
@@ -424,7 +426,7 @@ handle_post(Iso* iso, int client_socket, const char* path,
 
     int failures = 0;
     for (int i = 0; replication_volumes[i] != -1; ++i) {
-        const int ret = send_file_to_storage(iso, replication_volumes[i], path, body, clen);
+        const int ret = send_file_to_storage(iso, replication_volumes[i], encoded_path, body, clen);
         if (ret != 0) {
             failures += 1;
         }
@@ -432,9 +434,27 @@ handle_post(Iso* iso, int client_socket, const char* path,
 
     if (failures > 0) {
         free(replication_volumes);
+        free(encoded_path);
         char response_body[BUFFER_SIZE];
         snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
         send_response(client_socket, 502, "Bad Gateway", "text/plain",
+            response_body);
+        return;
+    }
+
+    // now store metadata since everything was successful
+    size_t serialized_size;
+    char* err = NULL;
+    char* serialize_locations = serialize_volume_data(iso, replication_volumes, &serialized_size);
+    leveldb_put(iso->metadata, iso->woptions, path, path_len, serialize_locations, serialized_size, &err);
+    if (err != NULL) {
+        fprintf(stderr, "error writing values to metadata: %s", err);
+        leveldb_free(err);
+        free(encoded_path);
+
+        char response_body[BUFFER_SIZE];
+        snprintf(response_body, BUFFER_SIZE, "cannot write metadata");
+        send_response(client_socket, 500, "Internal Server Error", "text/plain",
             response_body);
         return;
     }
@@ -444,10 +464,126 @@ handle_post(Iso* iso, int client_socket, const char* path,
         "File upload processed");
 }
 
-static int
-handle_get(Iso* iso, int c_sock)
+void
+handle_get(Iso* iso, int c_sock, Request* req)
 {
-    return 0;
+    size_t readlen;
+    char* err = NULL;
+    size_t path_len = strlen(req->url);
+    char* data = leveldb_get(iso->metadata, iso->roptions, req->url, path_len, &readlen, &err);
+    if (err != NULL) {
+        fprintf(stderr, "error writing values to metadata: %s", err);
+        leveldb_free(err);
+
+        char response_body[BUFFER_SIZE];
+        snprintf(response_body, BUFFER_SIZE, "cannot find metadata for given file");
+        send_response(c_sock, 404, "Not Found", "text/plain",
+            response_body);
+        return;
+    }
+
+    // TODO: implement concurrently reading from volumes maybe prob not
+    size_t vol_count;
+    DecodedVolume* decoded_volumes = decode_volumes(data, &vol_count);
+
+    int s_sock = connect_to_forward_server(decoded_volumes[0].addr, decoded_volumes[0].port);
+    if (s_sock < 0) {
+        free(decoded_volumes);
+        leveldb_free(data);
+
+        char response_body[BUFFER_SIZE];
+        snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
+        send_response(c_sock, 502, "Bad Gateway", "text/plain",
+            response_body);
+        return;
+    }
+
+    /*
+> GET /lol1234 HTTP/1.1
+> Host: localhost:8080
+> User-Agent: curl/8.12.1
+> Accept:
+        */
+
+    char* encoded_path = key_to_path(req->url, path_len);
+    char request_header[BUFFER_SIZE];
+    snprintf(request_header, MAX_HEADER_SIZE,
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s:%d\r\n"
+        "\r\n",
+        encoded_path, decoded_volumes[0].addr, decoded_volumes[0].port);
+
+    if (bsend(s_sock, request_header, strlen(request_header), -1) < 0) {
+        perror("error sending response header");
+        free(decoded_volumes);
+        free(encoded_path);
+        free(data);
+        hclose(s_sock);
+        return;
+    }
+
+    Response resp;
+    if (get_resp_from_socket(s_sock, &resp) < 0) {
+        free(decoded_volumes);
+        free(encoded_path);
+        free(data);
+        hclose(s_sock);
+
+        char response_body[BUFFER_SIZE];
+        snprintf(response_body, BUFFER_SIZE, "error connecting to servers");
+        send_response(c_sock, 502, "Bad Gateway", "text/plain",
+            response_body);
+        return;
+    }
+
+    // TODO: make this streaming
+
+    char buffer[BUFFER_SIZE];
+    size_t bytes_remaining = resp.content_length;
+    int rc = 0;
+
+    while (bytes_remaining > 0) {
+        size_t to_read = bytes_remaining < BUFFER_SIZE ? bytes_remaining : BUFFER_SIZE;
+        ssize_t bytes_read = brecv(s_sock, buffer, to_read, -1);
+        if (bytes_read < 0) {
+            fprintf(stderr, "Error reading from source socket: %s\n", strerror(errno));
+            rc = -1;
+            break;
+        }
+
+        if (bytes_read == 0 && bytes_remaining > 0) {
+            fprintf(stderr, "Source socket closed prematurely\n");
+            errno = ECONNRESET;
+            rc = -1;
+            break;
+        }
+
+        ssize_t bytes_written = 0;
+        size_t total_written = 0;
+
+        while (total_written < bytes_read) {
+            bytes_written = bsend(c_sock, buffer + total_written,
+                bytes_read - total_written, -1);
+            if (bytes_written < 0) {
+                fprintf(stderr, "Error writing to destination socket: %s\n", strerror(errno));
+                rc = -1;
+                break;
+            }
+            total_written += bytes_written;
+        }
+
+        if (rc < 0) {
+            break; // Error occurred in inner loop
+        }
+
+        bytes_remaining -= bytes_read;
+    }
+
+    free(decoded_volumes);
+    free(encoded_path);
+    free(data);
+
+    return;
 }
 
 coroutine void
@@ -475,6 +611,7 @@ req_handler(Iso* iso, int c_sock)
 
         handle_post(iso, c_sock, req.url, temp_body, req.content_length);
     } else if (strcmp(req.method, "GET") == 0) {
+        handle_get(iso, c_sock, &req);
     }
 
     hclose(c_sock);
