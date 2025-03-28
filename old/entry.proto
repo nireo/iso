@@ -1,7 +1,0 @@
-syntax = "proto3";
-
-message entry {
-  repeated string volumes = 1;
-  string hash = 2;
-  int32 deleted = 3;
-}
