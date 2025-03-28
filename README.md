@@ -1,15 +1,3 @@
 # iso: distributed filesystem in c
 
-iso is a simple filesystem built in C. The code here only manages the files, but the fileservers themselfs are nginx instances for added speed and simplicity when deploying. Using nginx means that the code ultimately stays simple and therefore is less prone to bugs.
-
-## Dependencies
-
-The manager uses:
-
-- mongoose: for a embeddable web server
-- leveldb: keeping track of different entries and their locations
-
-## TODO:
-
-- Stop using OpenSSL functions and custom base64 implementation when mongoose has its own functions for both things.
-- Replication to multiple volumes, currently file is written to a "randomly" chosen volume.
+Iso is a relatively simple distributed file system. The storage nodes handle HTTP post requests and store and retrieve files. The main dependencies are leveldb for fast retrieval of file metadata and libdill to provide structured concurrency. Mainly decided to use libdill since I like the golang way of doing concurrency and that is pretty close and it's also very performant.
