@@ -88,7 +88,12 @@ client_handler(int client_socket)
 
     if (strcmp(req.method, "POST") == 0 && req.content_length > 0) {
         strcpy(dirpath, filepath);
-        mkdirs(dirname(dirpath));
+        if (mkdirs(dirname(dirpath)) < 0) {
+            char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 22\r\n\r\nFailed to create file\n";
+            bsend(client_socket, response, strlen(response), deadline);
+            hclose(client_socket);
+            return;
+        }
 
         FILE* file = fopen(filepath, "wb");
         if (!file) {
@@ -98,15 +103,37 @@ client_handler(int client_socket)
             return;
         }
 
-        char* buffer = malloc(req.content_length);
-        int read = brecv(client_socket, buffer, req.content_length, -1);
+        char buffer[BUFFER_SIZE];
+        size_t remaining = req.content_length;
+        size_t total_read = 0;
+        int read_bytes;
 
-        fwrite(buffer, 1, req.content_length, file);
+        while (remaining > 0) {
+            size_t to_read = remaining < BUFFER_SIZE ? remaining : BUFFER_SIZE;
+            read_bytes = brecv(client_socket, buffer, to_read, deadline);
+
+            if (read_bytes < 0) {
+                fprintf(stderr, "error reading from socket: %d\n", errno);
+                break;
+            }
+
+            size_t written = fwrite(buffer, 1, read_bytes, file);
+            if (written != read_bytes) {
+                fprintf(stderr, "error writing to file :%s\n", strerror(errno));
+                break;
+            }
+            remaining -= read_bytes;
+            total_read += read_bytes;
+        }
         fclose(file);
-        free(buffer);
 
-        char response[] = "HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\nCreated\n";
-        bsend(client_socket, response, strlen(response), deadline);
+        if (total_read != req.content_length) {
+            char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 26\r\n\r\nFailed to save complete file\n";
+            bsend(client_socket, response, strlen(response), deadline);
+        } else {
+            char response[] = "HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\nCreated\n";
+            bsend(client_socket, response, strlen(response), deadline);
+        }
     } else if (strcmp(req.method, "GET") == 0) {
         FILE* file = fopen(filepath, "rb");
         if (!file) {
@@ -129,9 +156,18 @@ client_handler(int client_socket)
             file_size);
 
         size_t bytes_read = 0;
-        bsend(client_socket, header, strlen(header), -1);
+        if (bsend(client_socket, header, strlen(header), -1) < 0) {
+            fprintf(stderr, "failed to send header: %d\n", errno);
+            fclose(file);
+            hclose(client_socket);
+            return;
+        }
         while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
-            bsend(client_socket, buffer, bytes_read, 0);
+            if (bsend(client_socket, buffer, bytes_read, -1) < 0) {
+                fclose(file);
+                hclose(client_socket);
+                return;
+            }
         }
 
         fclose(file);
@@ -165,7 +201,7 @@ main(int argc, char** argv)
         exit(EXIT_FAILURE);
     }
 
-    int ln = tcp_listen(&addr, 10);
+    int ln = tcp_listen(&addr, 128);
     if (ln < 0) {
         perror("error creating listener");
         exit(EXIT_FAILURE);

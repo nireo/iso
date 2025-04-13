@@ -498,13 +498,6 @@ handle_get(Iso* iso, int c_sock, Request* req)
         return;
     }
 
-    /*
-> GET /lol1234 HTTP/1.1
-> Host: localhost:8080
-> User-Agent: curl/8.12.1
-> Accept:
-        */
-
     char* encoded_path = key_to_path(req->url, path_len);
     char request_header[BUFFER_SIZE];
     snprintf(request_header, MAX_HEADER_SIZE,
